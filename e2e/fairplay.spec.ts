@@ -36,8 +36,12 @@ test("seed match follows the exact three-minute rotation", async ({ page }) => {
   expect(layout.scrollHeight).toBeLessThanOrEqual(layout.viewportHeight);
   expect(layout.primaryActionsBottom).toBeLessThanOrEqual(layout.viewportHeight);
 
-  await page.clock.fastForward(180_000);
+  await page.clock.fastForward(170_000);
+  await expect(page.getByText("GJØR KLAR · 00:10")).toBeVisible();
+  await expect(page.locator(".live-page")).toHaveClass(/live-page--prepare/);
+  await page.clock.fastForward(10_000);
   await expect(page.getByText("BYTT NÅ")).toBeVisible();
+  await expect(page.locator(".live-page")).not.toHaveClass(/live-page--prepare/);
   await expect(page.getByText(/Lucas\s+INN/i)).toBeVisible();
   await expect(page.getByText(/Ask\s+UT/i)).toBeVisible();
   await page.getByRole("button", { name: "BYTTET ER GJORT" }).click();

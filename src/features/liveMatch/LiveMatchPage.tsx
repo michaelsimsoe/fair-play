@@ -750,6 +750,8 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
     ? recommendation.dueAtElapsedMs - elapsedMs
     : undefined;
   const due = dueDelta !== undefined && dueDelta <= 0;
+  const preparing =
+    dueDelta !== undefined && dueDelta > 0 && dueDelta <= match.alertLeadMs;
   const firstSwap = recommendation?.swaps[0];
   const fieldPlayers = bundle.players.filter((player) =>
     projection.currentLineupIds.includes(playerId(player.id)),
@@ -761,7 +763,11 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
   );
 
   return (
-    <main className={`live-page ${due ? "live-page--due" : ""}`}>
+    <main
+      className={`live-page ${preparing ? "live-page--prepare" : ""} ${
+        due ? "live-page--due" : ""
+      }`}
+    >
       <header className="live-header">
         <div>
           <strong>mot {match.opponent || "motstander"}</strong>
@@ -805,14 +811,23 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
           </div>
         ) : firstSwap && recommendation ? (
           <div
-            className={`recommendation ${due ? "recommendation--due" : ""}`}
+            className={`recommendation ${
+              preparing ? "recommendation--prepare" : ""
+            } ${due ? "recommendation--due" : ""}`}
             aria-live={due ? "assertive" : "off"}
           >
             <p className="recommendation__status">
               {due
                 ? "BYTT NÅ"
-                : `Neste bytte om ${formatDuration(Math.max(0, dueDelta ?? 0))}`}
+                : preparing
+                  ? `GJØR KLAR · ${formatDuration(Math.max(0, dueDelta ?? 0))}`
+                  : `Neste bytte om ${formatDuration(Math.max(0, dueDelta ?? 0))}`}
             </p>
+            {preparing && (
+              <span className="sr-only" role="status">
+                Gjør klar til bytte
+              </span>
+            )}
             <div className="swap-names">
               <strong>
                 {playerName(bundle.players, firstSwap.incomingPlayerId)}{" "}
