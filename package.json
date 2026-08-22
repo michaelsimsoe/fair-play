@@ -5,6 +5,8 @@
   "private": true,
   "scripts": {
     "dev": "vite",
+    "icons": "node scripts/generate-icons.mjs",
+    "prebuild": "npm run icons",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b --pretty false",

@@ -12,9 +12,11 @@ export default defineConfig({
       registerType: "prompt",
       injectRegister: false,
       includeAssets: [
-        "icons/icon.svg",
+        "icons/favicon-16.png",
+        "icons/favicon-32.png",
         "icons/icon-192.png",
         "icons/icon-512.png",
+        "icons/icon-maskable-512.png",
         "icons/apple-touch-icon.png",
         "seed/seed-krokelvdalen-2.json",
       ],
@@ -35,14 +37,16 @@ export default defineConfig({
             src: `${base}icons/icon-192.png`,
             sizes: "192x192",
             type: "image/png",
+            purpose: "any",
           },
           {
             src: `${base}icons/icon-512.png`,
             sizes: "512x512",
             type: "image/png",
+            purpose: "any",
           },
           {
-            src: `${base}icons/icon-512.png`,
+            src: `${base}icons/icon-maskable-512.png`,
             sizes: "512x512",
             type: "image/png",
             purpose: "maskable",
@@ -51,6 +55,7 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ["**/*.{js,css,html,svg,png,json}"],
+        globIgnores: ["splash/**/*.png"],
         navigateFallback: "index.html",
         cleanupOutdatedCaches: true,
         clientsClaim: false,

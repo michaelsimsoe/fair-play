@@ -114,3 +114,11 @@ base-uri 'self'; form-action 'self'
 
 No service-worker update forces a reload during a running or paused match. Updates
 remain deferred until the live screen has been left.
+
+## App artwork
+
+`assets/fair-play-icon.png` is the repository-owned master artwork. `npm run icons`
+derives transparent browser favicons, opaque iOS/PWA install icons, and a dedicated
+maskable icon with a safe crop zone, plus correctly sized portrait and landscape
+launch screens for common iPhones. Other platforms use the manifest icon and
+`background_color` when generating their launch splash.
