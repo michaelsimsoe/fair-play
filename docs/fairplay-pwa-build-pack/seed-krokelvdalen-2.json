@@ -1,0 +1,106 @@
+{
+  "format": "fairplay-sideline-seed",
+  "schemaVersion": 1,
+  "tournament": {
+    "id": "tournament-krokelvdalen-2-2026-08-22",
+    "name": "Spilldag 22. august 2026",
+    "date": "2026-08-22",
+    "timezone": "Europe/Oslo",
+    "teamName": "Krokelvdalen 2",
+    "coachLabel": "Michael",
+    "defaultMatchDurationMs": 720000,
+    "defaultPlayersOnField": 3,
+    "defaultMinimumStintMs": 60000,
+    "defaultAlertLeadMs": 10000,
+    "fairnessScope": "tournament"
+  },
+  "players": [
+    {
+      "id": "player-ask",
+      "name": "Ask",
+      "sortOrder": 0,
+      "active": true
+    },
+    {
+      "id": "player-ali",
+      "name": "Ali",
+      "sortOrder": 1,
+      "active": true
+    },
+    {
+      "id": "player-fredrik-h",
+      "name": "Fredrik H",
+      "sortOrder": 2,
+      "active": true
+    },
+    {
+      "id": "player-lucas",
+      "name": "Lucas",
+      "sortOrder": 3,
+      "active": true
+    }
+  ],
+  "matches": [
+    {
+      "id": "match-1-reinen-hvit",
+      "order": 0,
+      "scheduledStartLocal": "2026-08-22T11:00:00",
+      "opponent": "Reinen Hvit",
+      "pitch": "2",
+      "plannedDurationMs": 720000,
+      "playersOnField": 3,
+      "eligiblePlayerIds": [
+        "player-ask",
+        "player-ali",
+        "player-fredrik-h",
+        "player-lucas"
+      ]
+    },
+    {
+      "id": "match-2-tuil-3",
+      "order": 1,
+      "scheduledStartLocal": "2026-08-22T11:30:00",
+      "opponent": "TUIL 3",
+      "pitch": "2",
+      "plannedDurationMs": 720000,
+      "playersOnField": 3,
+      "eligiblePlayerIds": [
+        "player-ask",
+        "player-ali",
+        "player-fredrik-h",
+        "player-lucas"
+      ]
+    },
+    {
+      "id": "match-3-tuil-4",
+      "order": 2,
+      "scheduledStartLocal": "2026-08-22T12:30:00",
+      "opponent": "TUIL 4",
+      "pitch": "2",
+      "plannedDurationMs": 720000,
+      "playersOnField": 3,
+      "eligiblePlayerIds": [
+        "player-ask",
+        "player-ali",
+        "player-fredrik-h",
+        "player-lucas"
+      ]
+    },
+    {
+      "id": "match-4-reinen-bla",
+      "order": 3,
+      "scheduledStartLocal": "2026-08-22T13:00:00",
+      "opponent": "Reinen Blå",
+      "pitch": "3",
+      "plannedDurationMs": 720000,
+      "playersOnField": 3,
+      "eligiblePlayerIds": [
+        "player-ask",
+        "player-ali",
+        "player-fredrik-h",
+        "player-lucas"
+      ]
+    }
+  ],
+  "suggestedFirstMatchStarters": ["player-ask", "player-ali", "player-fredrik-h"]
+}
