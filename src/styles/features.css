@@ -351,7 +351,9 @@
 
 .swap-names {
   display: grid;
-  line-height: 1;
+  gap: clamp(0.55rem, 1.4vh, 0.9rem);
+  margin-block: 0.15rem;
+  line-height: 1.05;
 }
 
 .swap-names strong {
@@ -738,6 +740,10 @@
     min-height: 90px;
   }
 
+  .swap-names {
+    gap: 0.4rem;
+  }
+
   .confirm-swap {
     min-height: 54px;
   }
@@ -779,6 +785,11 @@
 
   .swap-names strong {
     font-size: 1.45rem;
+  }
+
+  .swap-names {
+    gap: 0.2rem;
+    margin-block: 0;
   }
 
   .live-hero > p {
