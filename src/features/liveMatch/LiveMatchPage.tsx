@@ -14,9 +14,11 @@ import {
   ThresholdCrossingTracker,
   type MatchClockState,
 } from "../../clock";
-import { formatDuration } from "../../components/format";
+import { formatDuration, formatSignedDuration } from "../../components/format";
 import { Button, StatusPill } from "../../components/ui";
 import {
+  DEFAULT_COMPENSATION_TOLERANCE_MS,
+  DEFAULT_MINIMUM_BENCH_REST_MS,
   planRecommendation,
   playerId,
   type PlayerId,
@@ -136,6 +138,8 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
   const [manualOpen, setManualOpen] = useState(false);
   const [manualOutgoing, setManualOutgoing] = useState<string>();
   const [manualIncoming, setManualIncoming] = useState<string>();
+  const [manualHoldOut, setManualHoldOut] = useState(false);
+  const [projectionOpen, setProjectionOpen] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [availabilityAction, setAvailabilityAction] = useState<{
     playerId: string;
@@ -178,7 +182,8 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
       availableIds.map((id) => [
         id,
         (planningProjection.fairnessBalanceMsByPlayer[id] ?? 0) +
-          (bundle.tournament.fairnessScope === "tournament"
+          (bundle.players.find((player) => player.id === id)?.membership === "team" &&
+          bundle.tournament.fairnessScope === "tournament"
             ? (priorTotals[id]?.balanceMs ?? 0)
             : 0),
       ]),
@@ -208,9 +213,19 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
       orderedAvailablePlayerIds: availableIds,
       currentLineupIds: planningProjection.currentLineupIds,
       balancesMsByPlayer: balances,
+      matchOnlyPlayerIds: bundle.players
+        .filter(
+          (player) =>
+            player.membership === "guest" &&
+            planningProjection.currentlyAvailableIds.includes(playerId(player.id)),
+        )
+        .map((player) => playerId(player.id)),
+      currentMatchBalancesMsByPlayer: planningProjection.fairnessBalanceMsByPlayer,
       currentFieldStintMsByPlayer: fieldStints,
       currentBenchStintMsByPlayer: benchStints,
       minimumPreferredStintMs: match.minimumStintMs,
+      minimumPreferredBenchRestMs: DEFAULT_MINIMUM_BENCH_REST_MS,
+      compensationToleranceMs: DEFAULT_COMPENSATION_TOLERANCE_MS,
       preferredChangeIntervalMs: Math.floor(
         match.plannedDurationMs / availableIds.length,
       ),
@@ -380,15 +395,17 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
   };
 
   const confirmRecommendation = async () => {
-    const swap = recommendation?.swaps[0];
-    if (!swap) return;
+    if (!recommendation || recommendation.swaps.length === 0) return;
+    const swaps = recommendation.swaps;
     const actionElapsed = clockRef.current.elapsedMs();
     const currentProjection = projectStoredMatch(match, events, actionElapsed);
-    const outgoing = String(swap.outgoingPlayerId);
-    const incoming = String(swap.incomingPlayerId);
-    const lineupAfter = currentProjection.currentLineupIds.map((id) =>
-      id === outgoing ? incoming : id,
-    );
+    const outgoing = swaps.map((swap) => String(swap.outgoingPlayerId));
+    const incoming = swaps.map((swap) => String(swap.incomingPlayerId));
+    const outgoingSet = new Set(outgoing);
+    const lineupAfter = [
+      ...currentProjection.currentLineupIds.filter((id) => !outgoingSet.has(id)),
+      ...incoming,
+    ];
     const event: MatchEventRecord = {
       id: crypto.randomUUID(),
       matchId: match.id,
@@ -399,8 +416,8 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
       source: "suggested-confirmation",
       schemaVersion: 1,
       payload: {
-        outgoingPlayerIds: [outgoing],
-        incomingPlayerIds: [incoming],
+        outgoingPlayerIds: outgoing,
+        incomingPlayerIds: incoming,
         lineupBeforeIds: [...currentProjection.currentLineupIds],
         lineupAfterIds: lineupAfter,
         recommendationId: recommendation.id,
@@ -416,10 +433,11 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
     const lineupAfter = currentProjection.currentLineupIds.map((id) =>
       id === manualOutgoing ? manualIncoming : id,
     );
-    const event: MatchEventRecord = {
+    const sequence = nextSequence();
+    const substitution: MatchEventRecord = {
       id: crypto.randomUUID(),
       matchId: match.id,
-      sequence: nextSequence(),
+      sequence,
       type: "SUBSTITUTION_CONFIRMED",
       elapsedMs: actionElapsed,
       recordedAtWallMs: browserClockSource.wallNowMs(),
@@ -432,10 +450,30 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
         lineupAfterIds: lineupAfter,
       },
     };
-    if (await commit(event, match, lineupAfter, actionElapsed)) {
+    const manualEvents: MatchEventRecord[] = [substitution];
+    if (manualHoldOut) {
+      manualEvents.push({
+        id: crypto.randomUUID(),
+        matchId: match.id,
+        sequence: sequence + 1,
+        type: "PLAYER_AVAILABILITY_CHANGED",
+        elapsedMs: actionElapsed,
+        recordedAtWallMs: browserClockSource.wallNowMs(),
+        source: "user",
+        schemaVersion: 1,
+        payload: {
+          playerId: manualOutgoing,
+          previousAvailable: true,
+          available: false,
+          reason: "Holdt ute etter manuelt bytte",
+        },
+      });
+    }
+    if (await commit(manualEvents, match, lineupAfter, actionElapsed)) {
       setManualOpen(false);
       setManualIncoming(undefined);
       setManualOutgoing(undefined);
+      setManualHoldOut(false);
     }
   };
 
@@ -753,6 +791,47 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
   const preparing =
     dueDelta !== undefined && dueDelta > 0 && dueDelta <= match.alertLeadMs;
   const firstSwap = recommendation?.swaps[0];
+  const projectedRows = recommendation
+    ? bundle.players
+        .filter((player) => match.eligiblePlayerIds.includes(player.id))
+        .map((player) => {
+          const id = playerId(player.id);
+          const available = planningProjection.currentlyAvailableIds.includes(id);
+          const projectedActual =
+            recommendation.projectedActualMsByPlayer[id] ??
+            planningProjection.actualMsByPlayer[id] ??
+            0;
+          const projectedIdeal =
+            recommendation.projectedIdealMsByPlayer[id] ??
+            planningProjection.idealMsByPlayer[id] ??
+            0;
+          return {
+            ...player,
+            available,
+            projectedActual,
+            projectedIdeal,
+            differenceMs: projectedActual - projectedIdeal,
+          };
+        })
+    : [];
+  const teamProjectedRows = projectedRows.filter(
+    (player) => player.membership === "team" && player.available,
+  );
+  const highlightedDifference =
+    [...teamProjectedRows]
+      .filter((player) => player.differenceMs < 0)
+      .sort((left, right) => left.differenceMs - right.differenceMs)[0] ??
+    [...teamProjectedRows].sort(
+      (left, right) => Math.abs(right.differenceMs) - Math.abs(left.differenceMs),
+    )[0];
+  const projectedDifferences = teamProjectedRows.map((player) => player.differenceMs);
+  const projectedDifferenceRange =
+    projectedDifferences.length > 0
+      ? Math.max(...projectedDifferences) - Math.min(...projectedDifferences)
+      : 0;
+  const hasProjectedDifference = projectedDifferences.some(
+    (difference) => Math.abs(difference) >= 500,
+  );
   const fieldPlayers = bundle.players.filter((player) =>
     projection.currentLineupIds.includes(playerId(player.id)),
   );
@@ -761,6 +840,12 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
       projection.currentlyAvailableIds.includes(playerId(player.id)) &&
       !projection.currentLineupIds.includes(playerId(player.id)),
   );
+  const openManual = (outgoing?: string) => {
+    setManualOutgoing(outgoing);
+    setManualIncoming(benchPlayers.length === 1 ? benchPlayers[0]?.id : undefined);
+    setManualHoldOut(false);
+    setManualOpen(true);
+  };
 
   return (
     <main
@@ -830,16 +915,22 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
             )}
             <div className="swap-names">
               <strong>
-                {playerName(bundle.players, firstSwap.incomingPlayerId)}{" "}
+                {recommendation.swaps
+                  .map((swap) => playerName(bundle.players, swap.incomingPlayerId))
+                  .join(" + ")}{" "}
                 <span>INN</span>
               </strong>
               <strong>
-                {playerName(bundle.players, firstSwap.outgoingPlayerId)} <span>UT</span>
+                {recommendation.swaps
+                  .map((swap) => playerName(bundle.players, swap.outgoingPlayerId))
+                  .join(" + ")}{" "}
+                <span>UT</span>
               </strong>
             </div>
             {due && (
               <p className="overdue">
-                +{formatDuration(Math.abs(dueDelta ?? 0))} over tiden
+                +{formatDuration(Math.abs(dueDelta ?? 0))} · Ta byttet når spillet
+                tillater det
               </p>
             )}
           </div>
@@ -850,11 +941,25 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
           </div>
         )}
 
-        {recommendation && !recommendation.diagnostics.perfectTargetFeasible && (
-          <p className="fairness-note">
-            Helt lik spilletid er ikke mulig i resten av denne kampen. Planen minimerer
-            forskjellen og tar avviket med videre.
-          </p>
+        {recommendation && hasProjectedDifference && highlightedDifference && (
+          <button
+            type="button"
+            className="projection-summary"
+            onClick={() => setProjectionOpen(true)}
+          >
+            <span>Prognose</span>
+            <strong>
+              {highlightedDifference.name}{" "}
+              {formatSignedDuration(highlightedDifference.differenceMs)} · spenn{" "}
+              {formatDuration(projectedDifferenceRange)}
+            </strong>
+            <span>
+              {recommendation.diagnostics.currentMatchDifferencesWithinTolerance
+                ? "Innenfor ±00:30"
+                : "Kompensasjon trengs"}{" "}
+              · Se alle
+            </span>
+          </button>
         )}
 
         {elapsedMs >= match.plannedDurationMs ? (
@@ -888,7 +993,9 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
 
       <section className="live-lineups">
         <div>
-          <h2>På banen</h2>
+          <h2>
+            På banen <span>Trykk spiller for bytte</span>
+          </h2>
           <div className="player-grid">
             {fieldPlayers.map((player) => (
               <PlayerCard
@@ -900,6 +1007,7 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
                   projection.playingStintsByPlayer[playerId(player.id)],
                   elapsedMs,
                 )}
+                onSelect={() => openManual(player.id)}
               />
             ))}
           </div>
@@ -930,7 +1038,7 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
       <footer className="live-actions">
         <Button
           disabled={match.status === "paused" || saveState === "saving"}
-          onClick={() => setManualOpen(true)}
+          onClick={() => openManual()}
         >
           Manuelt bytte
         </Button>
@@ -958,15 +1066,66 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
           outgoing={manualOutgoing}
           incoming={manualIncoming}
           elapsedMs={elapsedMs}
+          holdOut={manualHoldOut}
           onOutgoing={setManualOutgoing}
           onIncoming={setManualIncoming}
+          onHoldOut={setManualHoldOut}
           onConfirm={() => void confirmManual()}
           onCancel={() => {
             setManualOpen(false);
             setManualOutgoing(undefined);
             setManualIncoming(undefined);
+            setManualHoldOut(false);
           }}
         />
+      )}
+
+      {projectionOpen && (
+        <div className="dialog-backdrop" role="presentation">
+          <section
+            className="dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="projection-title"
+          >
+            <h2 id="projection-title">Prognose etter kampen</h2>
+            <p className="muted">
+              Basert på planen akkurat nå. Forskjeller innen ±00:30 trenger ikke et
+              ekstra kort bytte.
+            </p>
+            <ul className="list projection-list">
+              {projectedRows.map((player) => (
+                <li className="list-row" key={player.id}>
+                  <div className="list-row__main">
+                    <p className="list-row__title">
+                      {player.name}
+                      {player.membership === "guest" ? " · Gjest" : ""}
+                      {!player.available ? " · Ikke tilgjengelig" : ""}
+                    </p>
+                    <p className="list-row__meta">
+                      Prognose {formatDuration(player.projectedActual)} · mål{" "}
+                      {formatDuration(player.projectedIdeal)}
+                    </p>
+                  </div>
+                  <StatusPill
+                    tone={
+                      Math.abs(player.differenceMs) <= DEFAULT_COMPENSATION_TOLERANCE_MS
+                        ? "positive"
+                        : "warning"
+                    }
+                  >
+                    {formatSignedDuration(player.differenceMs)}
+                  </StatusPill>
+                </li>
+              ))}
+            </ul>
+            <div className="dialog__actions">
+              <Button variant="primary" onClick={() => setProjectionOpen(false)}>
+                Lukk
+              </Button>
+            </div>
+          </section>
+        </div>
       )}
 
       {toolsOpen && (
@@ -1112,24 +1271,39 @@ function PlayerCard({
   state,
   actualMs,
   intervalMs,
+  onSelect,
 }: {
-  player: { id: string; name: string };
+  player: { id: string; name: string; membership: "team" | "guest" };
   state: "field" | "bench";
   actualMs: number;
   intervalMs: number;
+  onSelect?: () => void;
 }) {
-  return (
-    <article className={`live-player live-player--${state}`}>
+  const content = (
+    <>
       <span className="live-player__state">
         <span aria-hidden="true">{state === "field" ? "●" : "○"}</span>{" "}
         {state === "field" ? "På banen" : "Benk"}
+        {player.membership === "guest" ? " · Gjest" : ""}
       </span>
       <strong title={player.name}>{player.name}</strong>
       <span className="live-player__time">{formatDuration(actualMs)}</span>
       <small>
         {state === "field" ? "Periode" : "På benk"} {formatDuration(intervalMs)}
       </small>
-    </article>
+    </>
+  );
+  return onSelect ? (
+    <button
+      type="button"
+      className={`live-player live-player--${state} live-player--selectable`}
+      aria-label={`Bytt ut ${player.name}`}
+      onClick={onSelect}
+    >
+      {content}
+    </button>
+  ) : (
+    <article className={`live-player live-player--${state}`}>{content}</article>
   );
 }
 
@@ -1139,18 +1313,22 @@ function ManualDialog({
   outgoing,
   incoming,
   elapsedMs,
+  holdOut,
   onOutgoing,
   onIncoming,
+  onHoldOut,
   onConfirm,
   onCancel,
 }: {
-  fieldPlayers: { id: string; name: string }[];
-  benchPlayers: { id: string; name: string }[];
+  fieldPlayers: { id: string; name: string; membership: "team" | "guest" }[];
+  benchPlayers: { id: string; name: string; membership: "team" | "guest" }[];
   outgoing: string | undefined;
   incoming: string | undefined;
   elapsedMs: number;
+  holdOut: boolean;
   onOutgoing: (id: string) => void;
   onIncoming: (id: string) => void;
+  onHoldOut: (holdOut: boolean) => void;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -1197,6 +1375,21 @@ function ManualDialog({
             </strong>
             <span>Registreres på {formatDuration(elapsedMs)}</span>
           </div>
+        )}
+        {outgoing && (
+          <label className="toggle-row manual-hold-out">
+            <span>
+              <strong>Hold spilleren ute</strong>
+              <small>
+                Fjernes fra planen til du markerer spilleren tilgjengelig igjen.
+              </small>
+            </span>
+            <input
+              type="checkbox"
+              checked={holdOut}
+              onChange={(event) => onHoldOut(event.currentTarget.checked)}
+            />
+          </label>
         )}
         <div className="dialog__actions">
           <Button

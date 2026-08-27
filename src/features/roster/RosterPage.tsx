@@ -35,11 +35,12 @@ export function RosterPage({ tournamentId }: { tournamentId: string }) {
     const form = event.currentTarget;
     const data = new FormData(form);
     const name = formString(data, "name");
+    const membership = formString(data, "membership") === "guest" ? "guest" : "team";
     form.reset();
     const input = form.elements.namedItem("name");
     if (input instanceof HTMLInputElement) input.value = "";
     await run(async () => {
-      await repository.addPlayer(tournamentId, name);
+      await repository.addPlayer(tournamentId, name, membership);
     });
   };
 
@@ -49,10 +50,12 @@ export function RosterPage({ tournamentId }: { tournamentId: string }) {
   ) => {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
+    const membership = formString(data, "membership") === "guest" ? "guest" : "team";
     await run(async () => {
       await repository.updatePlayer({
         ...player,
         name: formString(data, "name"),
+        membership,
       });
       setEditing(undefined);
     });
@@ -63,6 +66,10 @@ export function RosterPage({ tournamentId }: { tournamentId: string }) {
   }
   if (state.status === "error") throw state.error;
   const bundle = state.data;
+  const activePlayers = bundle.players.filter((player) => player.active);
+  const activeTeamPlayers = activePlayers.filter(
+    (player) => player.membership === "team",
+  );
 
   const move = async (playerId: string, direction: -1 | 1) => {
     const ids = bundle.players.map((player) => player.id);
@@ -78,7 +85,7 @@ export function RosterPage({ tournamentId }: { tournamentId: string }) {
       <PageHeader
         eyebrow={bundle.tournament.teamName}
         title="Spillere"
-        subtitle="Rekkefølgen brukes som stabilt skille når spillerne står likt."
+        subtitle="Lagspillere bærer avvik videre. Gjester deler bare målet i kampene de deltar i."
         onBack={() => navigate({ name: "tournament", tournamentId })}
       />
 
@@ -95,6 +102,10 @@ export function RosterPage({ tournamentId }: { tournamentId: string }) {
             autoComplete="off"
             placeholder="Spillernavn"
           />
+          <select name="membership" aria-label="Spillertype" defaultValue="team">
+            <option value="team">Lagspiller</option>
+            <option value="guest">Gjest</option>
+          </select>
           <Button type="submit" variant="primary" disabled={working}>
             Legg til
           </Button>
@@ -121,6 +132,14 @@ export function RosterPage({ tournamentId }: { tournamentId: string }) {
                     onSubmit={(event) => void savePlayer(event, player)}
                   >
                     <input name="name" required defaultValue={player.name} autoFocus />
+                    <select
+                      name="membership"
+                      aria-label={`Spillertype for ${player.name}`}
+                      defaultValue={player.membership}
+                    >
+                      <option value="team">Lagspiller</option>
+                      <option value="guest">Gjest</option>
+                    </select>
                     <Button type="submit" variant="primary">
                       Lagre
                     </Button>
@@ -149,6 +168,7 @@ export function RosterPage({ tournamentId }: { tournamentId: string }) {
                     <div className="list-row__main">
                       <p className="list-row__title">{player.name}</p>
                       <p className="list-row__meta">
+                        {player.membership === "guest" ? "Gjest" : "Lagspiller"} ·{" "}
                         {player.active ? "Aktiv" : "Arkivert"}
                       </p>
                     </div>
@@ -195,8 +215,8 @@ export function RosterPage({ tournamentId }: { tournamentId: string }) {
         variant="primary"
         full
         disabled={
-          bundle.players.filter((player) => player.active).length <
-          bundle.tournament.defaultPlayersOnField
+          activeTeamPlayers.length === 0 ||
+          activePlayers.length < bundle.tournament.defaultPlayersOnField
         }
         onClick={() => navigate({ name: "matches", tournamentId })}
       >

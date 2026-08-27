@@ -76,10 +76,23 @@ test("a delayed confirmation records reality and reports the remaining imbalance
   await startFirstSeedMatch(page);
 
   await page.clock.fastForward(207_000);
-  await expect(page.getByText("+00:27 over tiden")).toBeVisible();
+  await expect(
+    page.getByText("+00:27 · Ta byttet når spillet tillater det"),
+  ).toBeVisible();
   await page.getByRole("button", { name: "BYTTET ER GJORT" }).click();
 
-  await expect(page.getByText(/Helt lik spilletid er ikke mulig/)).toBeVisible();
+  const projection = page.locator(".projection-summary");
+  await expect(projection).toContainText("Lucas");
+  await expect(projection).toContainText("−0:27");
+  await expect(projection).toContainText("Innenfor ±00:30");
+  await projection.click();
+  await expect(
+    page.getByRole("dialog", { name: "Prognose etter kampen" }),
+  ).toBeVisible();
+  await page
+    .getByRole("dialog", { name: "Prognose etter kampen" })
+    .getByRole("button", { name: "Lukk" })
+    .click();
   await page.clock.fastForward(513_000);
   await page.getByRole("button", { name: "AVSLUTT KAMP" }).click();
   await expect(page.getByText("03:27")).toBeVisible();
@@ -124,10 +137,8 @@ test("manual deviation changes the real lineup and audited undo restores it", as
   await startFirstSeedMatch(page);
   await page.clock.fastForward(60_000);
 
-  await page.getByRole("button", { name: "Manuelt bytte" }).click();
+  await page.getByRole("button", { name: "Bytt ut Fredrik H" }).click();
   const dialog = page.getByRole("dialog", { name: "Manuelt bytte" });
-  await dialog.getByRole("button", { name: "Fredrik H" }).click();
-  await dialog.getByRole("button", { name: "Lucas" }).click();
   await dialog.getByRole("button", { name: "REGISTRER BYTTE" }).click();
 
   await expect(
@@ -144,6 +155,20 @@ test("manual deviation changes the real lineup and audited undo restores it", as
   ).toBeVisible();
   await expect(
     page.locator(".live-player--bench").filter({ hasText: "Lucas" }),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "Bytt ut Fredrik H" }).click();
+  const holdOutDialog = page.getByRole("dialog", { name: "Manuelt bytte" });
+  await holdOutDialog.getByRole("checkbox", { name: /Hold spilleren ute/ }).check();
+  await holdOutDialog.getByRole("button", { name: "REGISTRER BYTTE" }).click();
+  await expect(
+    page.locator(".live-player").filter({ hasText: "Fredrik H" }),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "Flere valg" }).click();
+  await expect(
+    page
+      .getByRole("dialog", { name: "Kampvalg" })
+      .getByRole("button", { name: /Fredrik H\s+Ikke tilgjengelig/ }),
   ).toBeVisible();
 });
 
@@ -171,4 +196,38 @@ test("the cached app shell and local tournament work offline", async ({
   await page.getByRole("button", { name: "START KAMP" }).click();
   await expect(page.getByText("Neste bytte om 03:00")).toBeVisible();
   expect(remoteRuntimeRequests).toEqual([]);
+});
+
+test("a reusable guest shares the match target without team carry", async ({
+  page,
+}) => {
+  await openWithClock(page);
+  await loadSeed(page);
+  await page.getByRole("button", { name: "GJØR KLAR KAMP" }).click();
+  await page.getByLabel("Navn på gjestespiller").fill("Maria");
+  await page.getByRole("button", { name: "Legg til gjest" }).click();
+  await expect(page.getByText("1 med i kampen")).toBeVisible();
+  await page.getByRole("button", { name: "START KAMP" }).click();
+  await expect(page.getByText("Neste bytte om 02:24")).toBeVisible();
+
+  for (let change = 0; change < 4; change += 1) {
+    await page.clock.fastForward(144_000);
+    await page.getByRole("button", { name: "BYTTET ER GJORT" }).click();
+  }
+  await page.clock.fastForward(144_000);
+  await page.getByRole("button", { name: "AVSLUTT KAMP" }).click();
+
+  for (const player of ["Ask", "Ali", "Fredrik H", "Lucas", "Maria"]) {
+    const row = page.locator(".summary-player").filter({ hasText: player }).first();
+    await expect(row.getByText("07:12", { exact: true }).first()).toBeVisible();
+  }
+  await expect(
+    page.locator(".summary-player").filter({ hasText: "Maria · Gjest" }),
+  ).toContainText("teller bare i denne kampen");
+  await page.getByRole("button", { name: "Tilbake" }).click();
+  await page.getByRole("button", { name: /Oppsummering\s+Hele spilldagen/ }).click();
+  await expect(
+    page.locator(".summary-players .summary-player").filter({ hasText: "Maria" }),
+  ).toHaveCount(0);
+  await expect(page.getByText(/Gjestespillere.*teller ikke her/)).toBeVisible();
 });

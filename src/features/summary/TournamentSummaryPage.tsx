@@ -28,7 +28,7 @@ export function TournamentSummaryPage({ tournamentId }: { tournamentId: string }
   if (state.status === "error") throw state.error;
   const { bundle, totals } = state.data;
   const balances = bundle.players
-    .filter((player) => player.active)
+    .filter((player) => player.active && player.membership === "team")
     .map((player) => totals[player.id]?.balanceMs ?? 0);
   const range = balances.length ? Math.max(...balances) - Math.min(...balances) : 0;
   const totalPlayerMs = Object.values(totals).reduce(
@@ -70,7 +70,7 @@ export function TournamentSummaryPage({ tournamentId }: { tournamentId: string }
 
       <div className="metric-grid">
         <div className="metric">
-          <span className="metric__label">Fordelt spilletid</span>
+          <span className="metric__label">Lagets spilletid</span>
           <span className="metric__value">{formatDuration(totalPlayerMs)}</span>
         </div>
         <div className="metric">
@@ -81,12 +81,12 @@ export function TournamentSummaryPage({ tournamentId }: { tournamentId: string }
 
       <Card>
         <div className="split-heading">
-          <h2>Spillere</h2>
+          <h2>Lagspillere</h2>
           <span className="muted">Faktisk · mål · avvik</span>
         </div>
         <ul className="list summary-players">
           {bundle.players
-            .filter((player) => player.active)
+            .filter((player) => player.active && player.membership === "team")
             .map((player) => (
               <li className="summary-player" key={player.id}>
                 <strong>{player.name}</strong>
@@ -100,7 +100,8 @@ export function TournamentSummaryPage({ tournamentId }: { tournamentId: string }
         </ul>
         <p className="notice">
           Avvik er ikke en rangering. Det viser bare hvor neste kamp kan kompensere for
-          tilgjengelighetsjusterte forskjeller.
+          tilgjengelighetsjusterte forskjeller. Gjestespillere vises i
+          kampoppsummeringen, men teller ikke her.
         </p>
       </Card>
 

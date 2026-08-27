@@ -135,7 +135,21 @@ export function TournamentPage({ tournamentId }: { tournamentId: string }) {
           </span>
           <strong>Spillere</strong>
           <small>
-            {bundle.players.filter((player) => player.active).length} aktive
+            {
+              bundle.players.filter(
+                (player) => player.active && player.membership === "team",
+              ).length
+            }{" "}
+            lagspillere
+            {bundle.players.some(
+              (player) => player.active && player.membership === "guest",
+            )
+              ? ` · ${
+                  bundle.players.filter(
+                    (player) => player.active && player.membership === "guest",
+                  ).length
+                } gjester`
+              : ""}
           </small>
         </button>
         <button
@@ -172,12 +186,14 @@ export function TournamentPage({ tournamentId }: { tournamentId: string }) {
           <h2>Spilletid så langt</h2>
           <span className="muted">Faktisk · avvik</span>
         </div>
-        {bundle.players.filter((player) => player.active).length === 0 ? (
+        {bundle.players.filter(
+          (player) => player.active && player.membership === "team",
+        ).length === 0 ? (
           <p className="muted">Legg til spillere før første kamp.</p>
         ) : (
           <ul className="list">
             {bundle.players
-              .filter((player) => player.active)
+              .filter((player) => player.active && player.membership === "team")
               .map((player) => (
                 <li className="list-row" key={player.id}>
                   <div className="list-row__main">

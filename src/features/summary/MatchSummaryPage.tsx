@@ -165,7 +165,10 @@ export function MatchSummaryPage({ matchId }: { matchId: string }) {
               return (
                 <li className="summary-player" key={player.id}>
                   <div>
-                    <strong>{player.name}</strong>
+                    <strong>
+                      {player.name}
+                      {player.membership === "guest" ? " · Gjest" : ""}
+                    </strong>
                     <small>
                       {stints.length} period{stints.length === 1 ? "e" : "er"} · lengste
                       benk {formatDuration(longestBench)}
@@ -176,14 +179,20 @@ export function MatchSummaryPage({ matchId }: { matchId: string }) {
                     <span>{formatDuration(ideal)}</span>
                     <span>{formatSignedDuration(balance)}</span>
                   </div>
-                  <small className="summary-player__cumulative">
-                    Hele spilldagen:{" "}
-                    {formatDuration((priorTotals[player.id]?.actualMs ?? 0) + actual)} ·
-                    avvik{" "}
-                    {formatSignedDuration(
-                      (priorTotals[player.id]?.balanceMs ?? 0) + balance,
-                    )}
-                  </small>
+                  {player.membership === "team" ? (
+                    <small className="summary-player__cumulative">
+                      Hele spilldagen:{" "}
+                      {formatDuration((priorTotals[player.id]?.actualMs ?? 0) + actual)}{" "}
+                      · avvik{" "}
+                      {formatSignedDuration(
+                        (priorTotals[player.id]?.balanceMs ?? 0) + balance,
+                      )}
+                    </small>
+                  ) : (
+                    <small className="summary-player__cumulative">
+                      Gjest · teller bare i denne kampen
+                    </small>
+                  )}
                 </li>
               );
             })}

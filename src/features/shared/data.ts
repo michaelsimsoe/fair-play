@@ -68,7 +68,7 @@ export async function calculateTournamentTotals(
     const projection = projectStoredMatch(match, events);
     for (const player of bundle.players) {
       const total = totals[player.id];
-      if (!total) continue;
+      if (!total || player.membership === "guest") continue;
       const id = playerId(player.id);
       total.actualMs += projection.actualMsByPlayer[id] ?? 0;
       total.idealMs += projection.idealMsByPlayer[id] ?? 0;

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import { navigate } from "../../app/router";
 import { useServices } from "../../app/services";
 import {
@@ -7,10 +7,17 @@ import {
   formatSignedDuration,
 } from "../../components/format";
 import { Button, Card, PageHeader, StatusPill } from "../../components/ui";
-import { planRecommendation, playerId, type PlayerId } from "../../domain";
+import {
+  DEFAULT_COMPENSATION_TOLERANCE_MS,
+  DEFAULT_MINIMUM_BENCH_REST_MS,
+  planRecommendation,
+  playerId,
+  type PlayerId,
+} from "../../domain";
 import type { ActiveMatchJournalRecord, MatchEventRecord } from "../../storage/schema";
 import { calculateTournamentTotals, loadMatchData, playerName } from "../shared/data";
 import { useAsyncData } from "../shared/hooks";
+import { formString } from "../shared/forms";
 
 export function PreMatchPage({ matchId }: { matchId: string }) {
   const { repository } = useServices();
@@ -38,17 +45,30 @@ type ReadyData = Awaited<ReturnType<typeof loadMatchData>> & {
 function PreMatchReady({ data }: { data: ReadyData }) {
   const { repository, audio, wakeLock } = useServices();
   const { match, tournamentBundle: bundle, priorTotals } = data;
-  const eligiblePlayers = bundle.players.filter(
-    (player) => player.active && match.eligiblePlayerIds.includes(player.id),
+  const [players, setPlayers] = useState(bundle.players);
+  const initialParticipantIds = players
+    .filter(
+      (player) =>
+        player.active &&
+        (player.membership === "team" || match.eligiblePlayerIds.includes(player.id)),
+    )
+    .map((player) => player.id);
+  const [participantIds, setParticipantIds] = useState<string[]>(initialParticipantIds);
+  const eligiblePlayers = players.filter(
+    (player) => player.active && participantIds.includes(player.id),
+  );
+  const guestPlayers = players.filter(
+    (player) => player.active && player.membership === "guest",
   );
   const recommendedIds = useMemo(
     () =>
       [...eligiblePlayers]
         .sort(
           (left, right) =>
-            (priorTotals[left.id]?.balanceMs ?? 0) -
-              (priorTotals[right.id]?.balanceMs ?? 0) ||
-            left.sortOrder - right.sortOrder,
+            (left.membership === "team" ? (priorTotals[left.id]?.balanceMs ?? 0) : 0) -
+              (right.membership === "team"
+                ? (priorTotals[right.id]?.balanceMs ?? 0)
+                : 0) || left.sortOrder - right.sortOrder,
         )
         .slice(0, match.playersOnField)
         .map((player) => player.id),
@@ -63,13 +83,14 @@ function PreMatchReady({ data }: { data: ReadyData }) {
   const [availableIds, setAvailableIds] = useState<string[]>(initialAvailable);
   const [starterIds, setStarterIds] = useState<string[]>(initialStarters ?? []);
   const [starting, setStarting] = useState(false);
+  const [addingGuest, setAddingGuest] = useState(false);
   const [error, setError] = useState<string>();
   const [audioMessage, setAudioMessage] = useState<string>();
 
   const balances = Object.fromEntries(
     eligiblePlayers.map((player) => [
       playerId(player.id),
-      bundle.tournament.fairnessScope === "tournament"
+      player.membership === "team" && bundle.tournament.fairnessScope === "tournament"
         ? (priorTotals[player.id]?.balanceMs ?? 0)
         : 0,
     ]),
@@ -89,9 +110,18 @@ function PreMatchReady({ data }: { data: ReadyData }) {
             .map((player) => playerId(player.id)),
           currentLineupIds: starterIds.map(playerId),
           balancesMsByPlayer: balances,
+          matchOnlyPlayerIds: eligiblePlayers
+            .filter(
+              (player) =>
+                player.membership === "guest" && availableIds.includes(player.id),
+            )
+            .map((player) => playerId(player.id)),
+          currentMatchBalancesMsByPlayer: zeros,
           currentFieldStintMsByPlayer: zeros,
           currentBenchStintMsByPlayer: zeros,
           minimumPreferredStintMs: match.minimumStintMs,
+          minimumPreferredBenchRestMs: DEFAULT_MINIMUM_BENCH_REST_MS,
+          compensationToleranceMs: DEFAULT_COMPENSATION_TOLERANCE_MS,
           preferredChangeIntervalMs: Math.floor(
             match.plannedDurationMs / availableIds.length,
           ),
@@ -104,6 +134,38 @@ function PreMatchReady({ data }: { data: ReadyData }) {
       setStarterIds((current) => current.filter((playerId) => playerId !== id));
     } else {
       setAvailableIds((current) => [...current, id]);
+    }
+  };
+
+  const toggleGuestParticipation = (id: string) => {
+    if (participantIds.includes(id)) {
+      setParticipantIds((current) => current.filter((playerId) => playerId !== id));
+      setAvailableIds((current) => current.filter((playerId) => playerId !== id));
+      setStarterIds((current) => current.filter((playerId) => playerId !== id));
+    } else {
+      setParticipantIds((current) => [...current, id]);
+      setAvailableIds((current) => [...current, id]);
+    }
+  };
+
+  const addGuest = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const name = formString(new FormData(form), "guestName");
+    setAddingGuest(true);
+    setError(undefined);
+    try {
+      const guest = await repository.addPlayer(bundle.tournament.id, name, "guest");
+      setPlayers((current) => [...current, guest]);
+      setParticipantIds((current) => [...current, guest.id]);
+      setAvailableIds((current) => [...current, guest.id]);
+      form.reset();
+    } catch (caught) {
+      setError(
+        caught instanceof Error ? caught.message : "Gjesten kunne ikke legges til.",
+      );
+    } finally {
+      setAddingGuest(false);
     }
   };
 
@@ -176,6 +238,7 @@ function PreMatchReady({ data }: { data: ReadyData }) {
         event,
         {
           ...match,
+          eligiblePlayerIds: participantIds,
           selectedStarterIds: starterIds,
           status: "running",
         },
@@ -210,6 +273,52 @@ function PreMatchReady({ data }: { data: ReadyData }) {
 
       <Card>
         <div className="split-heading">
+          <h2>Gjestespillere</h2>
+          <StatusPill>
+            {guestPlayers.filter((player) => participantIds.includes(player.id)).length}{" "}
+            med i kampen
+          </StatusPill>
+        </div>
+        <p className="muted">
+          Gjester deler spilletiden i denne kampen, men påvirker ikke lagets avvik i
+          senere kamper.
+        </p>
+        {guestPlayers.length > 0 && (
+          <div className="guest-picker">
+            {guestPlayers.map((player) => (
+              <button
+                key={player.id}
+                aria-pressed={participantIds.includes(player.id)}
+                onClick={() => toggleGuestParticipation(player.id)}
+              >
+                <strong>{player.name}</strong>
+                <span>
+                  {participantIds.includes(player.id) ? "Med i kampen" : "Ikke med"}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+        <form className="add-row" onSubmit={(event) => void addGuest(event)}>
+          <label className="sr-only" htmlFor="quick-guest-name">
+            Navn på gjestespiller
+          </label>
+          <input
+            id="quick-guest-name"
+            name="guestName"
+            required
+            disabled={addingGuest}
+            placeholder="Navn på ny gjest"
+            autoComplete="off"
+          />
+          <Button type="submit" disabled={addingGuest}>
+            {addingGuest ? "Legger til …" : "Legg til gjest"}
+          </Button>
+        </form>
+      </Card>
+
+      <Card>
+        <div className="split-heading">
           <h2>Tilgjengelighet</h2>
           <StatusPill
             tone={availableIds.length >= match.playersOnField ? "positive" : "danger"}
@@ -231,8 +340,13 @@ function PreMatchReady({ data }: { data: ReadyData }) {
                 <span>
                   <strong>{player.name}</strong>
                   <small>
-                    Totalt {formatDuration(priorTotals[player.id]?.actualMs ?? 0)} ·
-                    avvik {formatSignedDuration(priorTotals[player.id]?.balanceMs ?? 0)}
+                    {player.membership === "guest"
+                      ? "Gjest · mål gjelder bare denne kampen"
+                      : `Totalt ${formatDuration(
+                          priorTotals[player.id]?.actualMs ?? 0,
+                        )} · avvik ${formatSignedDuration(
+                          priorTotals[player.id]?.balanceMs ?? 0,
+                        )}`}
                   </small>
                 </span>
                 <span>
@@ -291,8 +405,8 @@ function PreMatchReady({ data }: { data: ReadyData }) {
           <div className="preview-swap">
             <strong>{formatDuration(recommendation.dueAtElapsedMs)}</strong>
             <span>
-              {playerName(bundle.players, firstSwap.incomingPlayerId)} inn ·{" "}
-              {playerName(bundle.players, firstSwap.outgoingPlayerId)} ut
+              {playerName(players, firstSwap.incomingPlayerId)} inn ·{" "}
+              {playerName(players, firstSwap.outgoingPlayerId)} ut
             </span>
           </div>
         ) : (

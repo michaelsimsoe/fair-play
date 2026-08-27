@@ -21,7 +21,32 @@ export function allocateRemaining(
     throw new RangeError("Player order must not contain duplicates.");
   if (fieldSlots > orderedPlayerIds.length)
     throw new RangeError("Field capacity exceeds available player capacity.");
-  const capacity = remainingMs * fieldSlots;
+  return allocateBoundedCapacity(
+    balancesMsByPlayer,
+    remainingMs * fieldSlots,
+    remainingMs,
+    orderedPlayerIds,
+  );
+}
+
+/**
+ * Integer bounded water-filling with an explicit total capacity. This is used
+ * when match-only players have first claimed their current-match target.
+ */
+export function allocateBoundedCapacity(
+  balancesMsByPlayer: Readonly<Record<PlayerId, number>>,
+  capacity: number,
+  maximumMsPerPlayer: number,
+  orderedPlayerIds: readonly PlayerId[],
+): Record<PlayerId, number> {
+  if (!Number.isInteger(capacity) || capacity < 0)
+    throw new RangeError("capacity must be a non-negative integer.");
+  if (!Number.isInteger(maximumMsPerPlayer) || maximumMsPerPlayer < 0)
+    throw new RangeError("maximumMsPerPlayer must be a non-negative integer.");
+  if (new Set(orderedPlayerIds).size !== orderedPlayerIds.length)
+    throw new RangeError("Player order must not contain duplicates.");
+  if (capacity > maximumMsPerPlayer * orderedPlayerIds.length)
+    throw new RangeError("Capacity exceeds player bounds.");
   const allocation = Object.fromEntries(
     orderedPlayerIds.map((id) => [id, 0]),
   ) as Record<PlayerId, number>;
@@ -33,12 +58,12 @@ export function allocateRemaining(
       throw new RangeError(`Balance for ${String(id)} must be finite.`);
     return balance;
   });
-  let low = Math.min(...balances.map((balance) => balance! - remainingMs));
-  let high = Math.max(...balances.map((balance) => balance! + remainingMs));
+  let low = Math.min(...balances.map((balance) => balance! - maximumMsPerPlayer));
+  let high = Math.max(...balances.map((balance) => balance! + maximumMsPerPlayer));
   for (let iteration = 0; iteration < 100; iteration += 1) {
     const level = (low + high) / 2;
     const sum = balances.reduce<number>(
-      (total, balance) => total + clamp(level - balance!, 0, remainingMs),
+      (total, balance) => total + clamp(level - balance!, 0, maximumMsPerPlayer),
       0,
     );
     if (sum < capacity) low = level;
@@ -46,7 +71,7 @@ export function allocateRemaining(
   }
   const level = (low + high) / 2;
   const fractions = orderedPlayerIds.map((id, index) => {
-    const raw = clamp(level - balances[index]!, 0, remainingMs);
+    const raw = clamp(level - balances[index]!, 0, maximumMsPerPlayer);
     const floored = Math.floor(raw);
     allocation[id] = floored;
     return { id, remainder: raw - floored };
@@ -62,7 +87,7 @@ export function allocateRemaining(
     let changed = false;
     for (const { id } of fractions) {
       if (missing === 0) break;
-      if (allocation[id]! < remainingMs) {
+      if (allocation[id]! < maximumMsPerPlayer) {
         allocation[id] = allocation[id]! + 1;
         missing -= 1;
         changed = true;

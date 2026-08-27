@@ -659,4 +659,362 @@ describe("planner", () => {
       expect(step.lineupAfterIds.every((id) => players.includes(id))).toBe(true);
     }
   });
+
+  it("gives a guest their match target before allocating team compensation", () => {
+    const team = ["team-a", "team-b", "team-c", "team-d"].map(playerId);
+    const guest = playerId("guest");
+    const ids = [...team, guest];
+    const result = planMatch({
+      nowElapsedMs: 0,
+      plannedEndElapsedMs: 120_000,
+      fieldSlots: 3,
+      orderedAvailablePlayerIds: ids,
+      currentLineupIds: team.slice(0, 3),
+      balancesMsByPlayer: {
+        [team[0]!]: -1_000_000,
+        [team[1]!]: 1_000_000,
+        [team[2]!]: 1_000_000,
+        [team[3]!]: 1_000_000,
+        [guest]: 9_000_000,
+      },
+      matchOnlyPlayerIds: [guest],
+      currentMatchBalancesMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+      actualMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+      idealMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+      currentFieldStintMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+      currentBenchStintMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+      minimumPreferredStintMs: 1,
+    }).recommendation;
+
+    expect(result).toBeDefined();
+    expect(result?.projectedActualMsByPlayer[guest]).toBe(72_000);
+    expect(result?.projectedIdealMsByPlayer[guest]).toBe(72_000);
+    expect(result?.projectedBalanceMsByPlayer[guest]).toBe(0);
+    expect(result?.projectedActualMsByPlayer[team[0]!]).toBe(120_000);
+    expect(
+      team.reduce(
+        (total, id) => total + (result?.projectedActualMsByPlayer[id] ?? 0),
+        0,
+      ),
+    ).toBe(288_000);
+    expect(
+      Object.values(result?.projectedActualMsByPlayer ?? {}).reduce(
+        (total, value) => total + value,
+        0,
+      ),
+    ).toBe(360_000);
+  });
+
+  it("ignores a guest's carried balance in later match planning", () => {
+    const team = ["team-a", "team-b", "team-c", "team-d"].map(playerId);
+    const guest = playerId("guest");
+    const ids = [...team, guest];
+    const input = {
+      nowElapsedMs: 0,
+      plannedEndElapsedMs: 120_000,
+      fieldSlots: 3,
+      orderedAvailablePlayerIds: ids,
+      currentLineupIds: team.slice(0, 3),
+      matchOnlyPlayerIds: [guest],
+      currentMatchBalancesMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+      currentFieldStintMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+      currentBenchStintMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+      minimumPreferredStintMs: 1,
+    };
+    const lowGuestBalance = planMatch({
+      ...input,
+      balancesMsByPlayer: {
+        [team[0]!]: -100_000,
+        [team[1]!]: 40_000,
+        [team[2]!]: 30_000,
+        [team[3]!]: 30_000,
+        [guest]: -9_000_000,
+      },
+    });
+    const highGuestBalance = planMatch({
+      ...input,
+      balancesMsByPlayer: {
+        [team[0]!]: -100_000,
+        [team[1]!]: 40_000,
+        [team[2]!]: 30_000,
+        [team[3]!]: 30_000,
+        [guest]: 9_000_000,
+      },
+    });
+
+    expect(highGuestBalance).toEqual(lowGuestBalance);
+  });
+
+  it("does not let an unavailable guest consume match capacity", () => {
+    const guest = playerId("guest");
+    const result = planMatch({
+      nowElapsedMs: 0,
+      plannedEndElapsedMs: 120_000,
+      fieldSlots: 3,
+      orderedAvailablePlayerIds: [ask, ali, fredrik],
+      currentLineupIds: [ask, ali, fredrik],
+      balancesMsByPlayer: { [ask]: 0, [ali]: 0, [fredrik]: 0, [guest]: -9_000_000 },
+      matchOnlyPlayerIds: [guest],
+      currentMatchBalancesMsByPlayer: {
+        [ask]: 0,
+        [ali]: 0,
+        [fredrik]: 0,
+        [guest]: -9_000_000,
+      },
+      currentFieldStintMsByPlayer: { [ask]: 0, [ali]: 0, [fredrik]: 0 },
+      currentBenchStintMsByPlayer: { [ask]: 0, [ali]: 0, [fredrik]: 0 },
+      minimumPreferredStintMs: 60_000,
+    });
+
+    expect(result.recommendation).toBeUndefined();
+    expect(result.preview).toEqual([]);
+  });
+
+  it("suppresses a tolerated sub-minimum catch-up stint", () => {
+    const result = planMatch({
+      nowElapsedMs: 0,
+      plannedEndElapsedMs: 120_000,
+      fieldSlots: 3,
+      orderedAvailablePlayerIds: players,
+      currentLineupIds: [ask, ali, fredrik],
+      balancesMsByPlayer: {
+        [ask]: -20_000,
+        [ali]: -20_000,
+        [fredrik]: -20_000,
+        [lucas]: 60_000,
+      },
+      currentMatchBalancesMsByPlayer: {
+        [ask]: -20_000,
+        [ali]: -20_000,
+        [fredrik]: -20_000,
+        [lucas]: 60_000,
+      },
+      currentFieldStintMsByPlayer: {
+        [ask]: 60_000,
+        [ali]: 60_000,
+        [fredrik]: 60_000,
+        [lucas]: 0,
+      },
+      currentBenchStintMsByPlayer: {
+        [ask]: 0,
+        [ali]: 0,
+        [fredrik]: 0,
+        [lucas]: 60_000,
+      },
+      minimumPreferredStintMs: 60_000,
+      compensationToleranceMs: 30_000,
+    });
+
+    expect(result.recommendation).toBeUndefined();
+  });
+
+  it("keeps a larger than tolerated current-match difference actionable", () => {
+    const result = planMatch({
+      nowElapsedMs: 0,
+      plannedEndElapsedMs: 30_000,
+      fieldSlots: 3,
+      orderedAvailablePlayerIds: players,
+      currentLineupIds: [ask, ali, fredrik],
+      balancesMsByPlayer: {
+        [ask]: 13_333.333,
+        [ali]: 13_333.333,
+        [fredrik]: 13_333.334,
+        [lucas]: -40_000,
+      },
+      currentMatchBalancesMsByPlayer: {
+        [ask]: 13_333.333,
+        [ali]: 13_333.333,
+        [fredrik]: 13_333.334,
+        [lucas]: -40_000,
+      },
+      actualMsByPlayer: {
+        [ask]: 13_333.333,
+        [ali]: 13_333.333,
+        [fredrik]: 13_333.334,
+        [lucas]: 0,
+      },
+      idealMsByPlayer: { [ask]: 0, [ali]: 0, [fredrik]: 0, [lucas]: 40_000 },
+      currentFieldStintMsByPlayer: {
+        [ask]: 60_000,
+        [ali]: 60_000,
+        [fredrik]: 60_000,
+        [lucas]: 0,
+      },
+      currentBenchStintMsByPlayer: {
+        [ask]: 0,
+        [ali]: 0,
+        [fredrik]: 0,
+        [lucas]: 60_000,
+      },
+      minimumPreferredStintMs: 60_000,
+      compensationToleranceMs: 30_000,
+    }).recommendation;
+
+    expect(result?.dueAtElapsedMs).toBe(0);
+    expect(result?.diagnostics.perfectTargetFeasible).toBe(false);
+    expect(result?.diagnostics.currentMatchDifferencesWithinTolerance).toBe(false);
+    expect(result?.diagnostics.maximumAbsoluteCurrentMatchDifferenceMs).toBeGreaterThan(
+      30_000,
+    );
+  });
+
+  it("preserves capacity and bounds across randomized guest/team inputs", () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 2, max: 8 }),
+        fc.integer({ min: 1, max: 20_000 }),
+        fc.array(fc.boolean(), { minLength: 2, maxLength: 8 }),
+        fc.array(fc.integer({ min: -100_000, max: 100_000 }), {
+          minLength: 2,
+          maxLength: 8,
+        }),
+        (playerCount, remainingMs, guestFlags, balances) => {
+          const ids = Array.from({ length: playerCount }, (_, index) =>
+            playerId(`mixed-${index}`),
+          );
+          const fieldSlots = Math.max(1, Math.min(playerCount - 1, 3));
+          const isGuest = ids.filter(
+            (_, index) => guestFlags[index % guestFlags.length],
+          );
+          const result = planMatch({
+            nowElapsedMs: 0,
+            plannedEndElapsedMs: remainingMs,
+            fieldSlots,
+            orderedAvailablePlayerIds: ids,
+            currentLineupIds: ids.slice(0, fieldSlots),
+            balancesMsByPlayer: Object.fromEntries(
+              ids.map((id, index) => [id, balances[index % balances.length]!]),
+            ),
+            matchOnlyPlayerIds: isGuest,
+            currentMatchBalancesMsByPlayer: Object.fromEntries(
+              ids.map((id, index) => [id, balances[(index + 1) % balances.length]!]),
+            ),
+            actualMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+            idealMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+            currentFieldStintMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+            currentBenchStintMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+            minimumPreferredStintMs: 1,
+          }).recommendation;
+          expect(result).toBeDefined();
+          const allocations = Object.values(result?.projectedActualMsByPlayer ?? {});
+          expect(allocations.reduce((sum, value) => sum + value, 0)).toBe(
+            fieldSlots * remainingMs,
+          );
+          allocations.forEach((value) => {
+            expect(value).toBeGreaterThanOrEqual(0);
+            expect(value).toBeLessThanOrEqual(remainingMs);
+          });
+        },
+      ),
+      { numRuns: 200 },
+    );
+  });
+
+  it("prefers a rested bench player over one just substituted out", () => {
+    const rested = playerId("rested");
+    const justSubbedOut = playerId("just-subbed-out");
+    const ids = [ask, ali, fredrik, justSubbedOut, rested];
+    const result = planMatch({
+      nowElapsedMs: 0,
+      plannedEndElapsedMs: 120_000,
+      fieldSlots: 3,
+      orderedAvailablePlayerIds: ids,
+      currentLineupIds: [ask, ali, fredrik],
+      balancesMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+      actualMsByPlayer: Object.fromEntries(ids.map((id) => [id, 60_000])),
+      idealMsByPlayer: Object.fromEntries(ids.map((id) => [id, 60_000])),
+      currentFieldStintMsByPlayer: {
+        [ask]: 60_000,
+        [ali]: 60_000,
+        [fredrik]: 60_000,
+        [justSubbedOut]: 0,
+        [rested]: 0,
+      },
+      currentBenchStintMsByPlayer: {
+        [ask]: 0,
+        [ali]: 0,
+        [fredrik]: 0,
+        [justSubbedOut]: 0,
+        [rested]: 60_000,
+      },
+      minimumPreferredStintMs: 1,
+      minimumPreferredBenchRestMs: 60_000,
+    }).recommendation;
+
+    expect(result?.swaps[0]?.incomingPlayerId).toBe(rested);
+  });
+
+  it("waits for the only benched player to rest when the allocation permits", () => {
+    const recentlyOutgoing = playerId("recently-outgoing");
+    const ids = [ask, ali, fredrik, recentlyOutgoing];
+    const result = planMatch({
+      nowElapsedMs: 0,
+      plannedEndElapsedMs: 120_000,
+      fieldSlots: 3,
+      orderedAvailablePlayerIds: ids,
+      currentLineupIds: [ask, ali, fredrik],
+      balancesMsByPlayer: {
+        [ask]: -13_334,
+        [ali]: -13_333,
+        [fredrik]: -13_333,
+        [recentlyOutgoing]: 40_000,
+      },
+      actualMsByPlayer: Object.fromEntries(ids.map((id) => [id, 60_000])),
+      idealMsByPlayer: Object.fromEntries(ids.map((id) => [id, 60_000])),
+      currentFieldStintMsByPlayer: {
+        [ask]: 60_000,
+        [ali]: 60_000,
+        [fredrik]: 60_000,
+        [recentlyOutgoing]: 0,
+      },
+      currentBenchStintMsByPlayer: {
+        [ask]: 0,
+        [ali]: 0,
+        [fredrik]: 0,
+        [recentlyOutgoing]: 0,
+      },
+      minimumPreferredStintMs: 1,
+      minimumPreferredBenchRestMs: 60_000,
+    }).recommendation;
+
+    expect(result?.dueAtElapsedMs).toBe(60_000);
+    expect(result?.swaps[0]?.incomingPlayerId).toBe(recentlyOutgoing);
+  });
+
+  it("allows a forced fairness entry before the preferred bench rest", () => {
+    const recentlyOutgoing = playerId("recently-outgoing");
+    const ids = [ask, ali, fredrik, recentlyOutgoing];
+    const result = planMatch({
+      nowElapsedMs: 0,
+      plannedEndElapsedMs: 30_000,
+      fieldSlots: 3,
+      orderedAvailablePlayerIds: ids,
+      currentLineupIds: [ask, ali, fredrik],
+      balancesMsByPlayer: {
+        [ask]: 33_333,
+        [ali]: 33_333,
+        [fredrik]: 33_334,
+        [recentlyOutgoing]: -100_000,
+      },
+      actualMsByPlayer: Object.fromEntries(ids.map((id) => [id, 60_000])),
+      idealMsByPlayer: Object.fromEntries(ids.map((id) => [id, 60_000])),
+      currentFieldStintMsByPlayer: {
+        [ask]: 60_000,
+        [ali]: 60_000,
+        [fredrik]: 60_000,
+        [recentlyOutgoing]: 0,
+      },
+      currentBenchStintMsByPlayer: {
+        [ask]: 0,
+        [ali]: 0,
+        [fredrik]: 0,
+        [recentlyOutgoing]: 0,
+      },
+      minimumPreferredStintMs: 1,
+      minimumPreferredBenchRestMs: 60_000,
+    }).recommendation;
+
+    expect(result?.dueAtElapsedMs).toBe(0);
+    expect(result?.swaps[0]?.incomingPlayerId).toBe(recentlyOutgoing);
+  });
 });

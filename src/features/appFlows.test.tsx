@@ -97,4 +97,46 @@ describe("primary setup flow", () => {
     ).toBe(true);
     expect((await repository.getJournal(match.id))?.clockStatus).toBe("running");
   });
+
+  it("adds a reusable guest during pre-match and includes them only in that match", async () => {
+    const user = userEvent.setup();
+    const tournament = await repository.createTournament({
+      name: "Spilldag",
+      date: "2026-08-27",
+      timezone: "Europe/Oslo",
+      teamName: "Testlaget",
+      defaultMatchDurationMs: 720_000,
+      defaultPlayersOnField: 3,
+      defaultMinimumStintMs: 60_000,
+      defaultAlertLeadMs: 10_000,
+      fairnessScope: "tournament",
+    });
+    await Promise.all(
+      ["Ask", "Ali", "Lucas"].map((name) => repository.addPlayer(tournament.id, name)),
+    );
+    const match = await repository.addMatch(tournament, {
+      opponent: "Reinen",
+    });
+
+    renderPage(<PreMatchPage matchId={match.id} />);
+    await user.type(await screen.findByLabelText("Navn på gjestespiller"), "Maria");
+    await user.click(screen.getByRole("button", { name: "Legg til gjest" }));
+    await screen.findByText("1 med i kampen");
+    await user.click(screen.getByRole("button", { name: "START KAMP" }));
+
+    await waitFor(async () => {
+      expect((await repository.getMatch(match.id))?.status).toBe("running");
+    });
+    const guest = (await database.players.toArray()).find(
+      (player) => player.name === "Maria",
+    );
+    const startedMatch = await repository.getMatch(match.id);
+    const startEvent = (await repository.getMatchEvents(match.id))[0];
+    expect(guest?.membership).toBe("guest");
+    expect(startedMatch?.eligiblePlayerIds).toContain(guest?.id);
+    if (startEvent?.type !== "MATCH_STARTED") {
+      throw new Error("Expected MATCH_STARTED");
+    }
+    expect(startEvent.payload.availablePlayerIds).toContain(guest?.id);
+  });
 });

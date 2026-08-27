@@ -65,6 +65,38 @@ describe("FairPlayRepository", () => {
     );
   });
 
+  it("keeps reusable guests out of new matches until selected", async () => {
+    const tournament = await repository.createTournament(tournamentInput);
+    const teamPlayer = await repository.addPlayer(tournament.id, "Ask");
+    const guest = await repository.addPlayer(tournament.id, "Maria", "guest");
+
+    const match = await repository.addMatch(tournament, {});
+
+    expect(teamPlayer.membership).toBe("team");
+    expect(guest.membership).toBe("guest");
+    expect(match.eligiblePlayerIds).toEqual([teamPlayer.id]);
+  });
+
+  it("updates unstarted participation but locks membership after match history", async () => {
+    const tournament = await repository.createTournament(tournamentInput);
+    const player = await repository.addPlayer(tournament.id, "Ask");
+    const match = await repository.addMatch(tournament, {});
+
+    await repository.updatePlayer({ ...player, membership: "guest" });
+    expect((await repository.getMatch(match.id))?.eligiblePlayerIds).not.toContain(
+      player.id,
+    );
+    await repository.updatePlayer({ ...player, membership: "team" });
+    expect((await repository.getMatch(match.id))?.eligiblePlayerIds).toContain(
+      player.id,
+    );
+    await repository.updateMatch({ ...match, status: "running" });
+
+    await expect(
+      repository.updatePlayer({ ...player, membership: "guest" }),
+    ).rejects.toThrow(/etter at en kamp har startet/);
+  });
+
   it("commits event, match status, and recovery journal atomically", async () => {
     const tournament = await repository.createTournament(tournamentInput);
     const match = await repository.addMatch(tournament, {});
@@ -192,6 +224,11 @@ describe("backup and import", () => {
         projectionBefore.actualMsByPlayer,
       );
       expect(projectionAfter.idealMsByPlayer).toEqual(projectionBefore.idealMsByPlayer);
+      expect(
+        (await target.players.toArray()).every(
+          (player) => player.membership === "team",
+        ),
+      ).toBe(true);
     } finally {
       target.close();
       await target.delete();
@@ -233,6 +270,27 @@ describe("backup and import", () => {
     expect(await database.tournaments.count()).toBe(before);
   });
 
+  it("migrates legacy v1 backups to team-player membership", async () => {
+    const tournament = await repository.createTournament(tournamentInput);
+    await repository.addPlayer(tournament.id, "Ask");
+    const current = JSON.parse(await exportBackup(database)) as {
+      schemaVersion: number;
+      data: { players: Array<Record<string, unknown>> };
+    };
+    current.schemaVersion = 1;
+    for (const player of current.data.players) delete player.membership;
+    const target = new FairPlayDatabase(`fairplay-legacy-${crypto.randomUUID()}`);
+    await target.open();
+
+    try {
+      await importBackup(JSON.stringify(current), "restore", target);
+      expect((await target.players.toArray())[0]?.membership).toBe("team");
+    } finally {
+      target.close();
+      await target.delete();
+    }
+  });
+
   it("validates and imports the bundled seed through the public schema", async () => {
     const tournamentId = await importSeed(JSON.stringify(seed), database);
     const bundle = await repository.getTournamentBundle(tournamentId);
@@ -244,6 +302,7 @@ describe("backup and import", () => {
       "Fredrik H",
       "Lucas",
     ]);
+    expect(bundle?.players.every((player) => player.membership === "team")).toBe(true);
     expect(bundle?.matches).toHaveLength(4);
     expect(bundle?.matches[0]).toMatchObject({
       plannedDurationMs: 720_000,
@@ -280,6 +339,7 @@ describe("schema migration", () => {
     try {
       await migrated.open();
       expect((await migrated.players.get("p1"))?.normalizedName).toBe("ask");
+      expect((await migrated.players.get("p1"))?.membership).toBe("team");
     } finally {
       migrated.close();
       await migrated.delete();

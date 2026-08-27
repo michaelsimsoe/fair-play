@@ -23,18 +23,27 @@ export const tournamentSchema = z
   })
   .strict();
 
+export const playerMembershipSchema = z.enum(["team", "guest"]);
+
+const playerBase = {
+  id,
+  tournamentId: id,
+  name: z.string().trim().min(1),
+  normalizedName: z.string().min(1),
+  sortOrder: z.number().int().nonnegative(),
+  active: z.boolean(),
+  createdAtWallMs: wallTime,
+  archivedAtWallMs: wallTime.optional(),
+};
+
 export const playerSchema = z
   .object({
-    id,
-    tournamentId: id,
-    name: z.string().trim().min(1),
-    normalizedName: z.string().min(1),
-    sortOrder: z.number().int().nonnegative(),
-    active: z.boolean(),
-    createdAtWallMs: wallTime,
-    archivedAtWallMs: wallTime.optional(),
+    ...playerBase,
+    membership: playerMembershipSchema,
   })
   .strict();
+
+const legacyPlayerSchema = z.object(playerBase).strict();
 
 export const matchStatusSchema = z.enum([
   "scheduled",
@@ -249,13 +258,31 @@ export const appSettingsSchema = z
 export const backupEnvelopeSchema = z
   .object({
     format: z.literal("fairplay-sideline-backup"),
-    schemaVersion: z.literal(1),
+    schemaVersion: z.literal(2),
     exportedAt: z.string().datetime(),
     appVersion: z.string().min(1),
     data: z
       .object({
         tournaments: z.array(tournamentSchema),
         players: z.array(playerSchema),
+        matches: z.array(matchSchema),
+        matchEvents: z.array(matchEventSchema),
+        appSettings: appSettingsSchema,
+      })
+      .strict(),
+  })
+  .strict();
+
+export const legacyBackupEnvelopeSchema = z
+  .object({
+    format: z.literal("fairplay-sideline-backup"),
+    schemaVersion: z.literal(1),
+    exportedAt: z.string().datetime(),
+    appVersion: z.string().min(1),
+    data: z
+      .object({
+        tournaments: z.array(tournamentSchema),
+        players: z.array(legacyPlayerSchema),
         matches: z.array(matchSchema),
         matchEvents: z.array(matchEventSchema),
         appSettings: appSettingsSchema,
@@ -290,6 +317,7 @@ export const seedEnvelopeSchema = z
           name: z.string().min(1),
           sortOrder: z.number().int().nonnegative(),
           active: z.boolean(),
+          membership: playerMembershipSchema.optional(),
         })
         .strict(),
     ),

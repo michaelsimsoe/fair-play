@@ -109,7 +109,11 @@ export class FairPlayRepository {
     });
   }
 
-  async addPlayer(tournamentId: string, name: string): Promise<PlayerRecord> {
+  async addPlayer(
+    tournamentId: string,
+    name: string,
+    membership: PlayerRecord["membership"] = "team",
+  ): Promise<PlayerRecord> {
     const normalizedName = normalizePlayerName(name);
     if (!normalizedName) throw new Error("Spillernavn kan ikke være tomt.");
     const players = await this.database.players
@@ -127,6 +131,7 @@ export class FairPlayRepository {
       normalizedName,
       sortOrder: players.length,
       active: true,
+      membership,
       createdAtWallMs: Date.now(),
     };
     await this.database.players.add(player);
@@ -136,6 +141,8 @@ export class FairPlayRepository {
 
   async updatePlayer(player: PlayerRecord): Promise<void> {
     const normalizedName = normalizePlayerName(player.name);
+    const existing = await this.database.players.get(player.id);
+    if (!existing) throw new Error("Spilleren finnes ikke.");
     const duplicate = await this.database.players
       .where("tournamentId")
       .equals(player.tournamentId)
@@ -145,8 +152,49 @@ export class FairPlayRepository {
       )
       .first();
     if (duplicate) throw new Error("En spiller med dette navnet finnes allerede.");
-    await this.database.players.put({ ...player, normalizedName });
-    await this.touchTournament(player.tournamentId);
+    const membershipChanged = existing.membership !== player.membership;
+    const matches = membershipChanged
+      ? await this.database.matches
+          .where("tournamentId")
+          .equals(player.tournamentId)
+          .toArray()
+      : [];
+    if (
+      membershipChanged &&
+      matches.some((match) => match.status !== "scheduled" && match.status !== "ready")
+    ) {
+      throw new Error("Spillertype kan ikke endres etter at en kamp har startet.");
+    }
+    const updatedMatches = matches.map((match) => {
+      const eligible = new Set(match.eligiblePlayerIds);
+      if (player.membership === "team") eligible.add(player.id);
+      else eligible.delete(player.id);
+      const updated: MatchRecord = {
+        ...match,
+        eligiblePlayerIds: [...eligible],
+        updatedAtWallMs: Date.now(),
+      };
+      if (
+        player.membership === "guest" &&
+        updated.selectedStarterIds?.includes(player.id)
+      ) {
+        updated.selectedStarterIds = updated.selectedStarterIds.filter(
+          (id) => id !== player.id,
+        );
+      }
+      return updated;
+    });
+    await this.database.transaction(
+      "rw",
+      [this.database.players, this.database.matches, this.database.tournaments],
+      async () => {
+        await this.database.players.put({ ...player, normalizedName });
+        if (updatedMatches.length > 0) {
+          await this.database.matches.bulkPut(updatedMatches);
+        }
+        await this.touchTournament(player.tournamentId);
+      },
+    );
   }
 
   async reorderPlayers(tournamentId: string, orderedIds: string[]): Promise<void> {
@@ -212,7 +260,7 @@ export class FairPlayRepository {
     const players = await this.database.players
       .where("tournamentId")
       .equals(tournament.id)
-      .filter((player) => player.active)
+      .filter((player) => player.active && player.membership === "team")
       .toArray();
     const now = Date.now();
     const match: MatchRecord = {

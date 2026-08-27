@@ -5,6 +5,11 @@ equal playing time during short children's football matches. It records what
 actually happened, derives every player's time from an auditable event stream, and
 recalculates the remaining substitution plan after delays or manual changes.
 
+Reusable guest players share the target in each selected match without affecting
+the team's tournament balance. Manual substitutions start directly from an
+on-field player card, and projected differences within 30 seconds are shown
+without forcing disruptive catch-up stints.
+
 The interface is Norwegian Bokmål. The implementation and tests are English.
 
 ## Run locally

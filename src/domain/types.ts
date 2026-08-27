@@ -79,6 +79,8 @@ export type Recommendation = Readonly<{
   reasons: readonly RecommendationReason[];
   diagnostics: Readonly<{
     perfectTargetFeasible: boolean;
+    currentMatchDifferencesWithinTolerance: boolean;
+    maximumAbsoluteCurrentMatchDifferenceMs: number;
     expectedSubstitutionCount: number;
     shortStintWarnings: readonly PlayerId[];
   }>;
