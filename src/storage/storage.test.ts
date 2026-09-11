@@ -1,6 +1,7 @@
 import Dexie from "dexie";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import seed from "../../public/seed/seed-krokelvdalen-2.json";
+import stormSeed from "../../public/seed/seed-storm-bla-2026-09-12.json";
 import { projectMatch } from "../domain";
 import {
   exportBackup,
@@ -309,6 +310,54 @@ describe("backup and import", () => {
       playersOnField: 3,
       status: "ready",
     });
+  });
+
+  it("imports the Storm BLÅ match day from the supplied schedule", async () => {
+    const tournamentId = await importSeed(JSON.stringify(stormSeed), database);
+    const bundle = await repository.getTournamentBundle(tournamentId);
+
+    expect(bundle?.tournament).toMatchObject({
+      name: "Spilldag – Kroken 12. september 2026",
+      date: "2026-09-12",
+      teamName: "Storm BLÅ",
+      defaultPlayersOnField: 3,
+      defaultMatchDurationMs: 720_000,
+    });
+    expect(bundle?.players.map((player) => player.name)).toEqual([
+      "Ask",
+      "Ali",
+      "Kai",
+      "Fredrik",
+      "Martin",
+    ]);
+    expect(
+      bundle?.matches.map(({ scheduledStartLocal, opponent, pitch }) => ({
+        scheduledStartLocal,
+        opponent,
+        pitch,
+      })),
+    ).toEqual([
+      {
+        scheduledStartLocal: "2026-09-12T11:30:00",
+        opponent: "TUIL Blå",
+        pitch: "1",
+      },
+      {
+        scheduledStartLocal: "2026-09-12T12:00:00",
+        opponent: "Ulfstind Rød",
+        pitch: "1",
+      },
+      {
+        scheduledStartLocal: "2026-09-12T12:45:00",
+        opponent: "Reinen IL Blå",
+        pitch: "1",
+      },
+      {
+        scheduledStartLocal: "2026-09-12T13:15:00",
+        opponent: "Reinen IL Hvit",
+        pitch: "1",
+      },
+    ]);
   });
 });
 

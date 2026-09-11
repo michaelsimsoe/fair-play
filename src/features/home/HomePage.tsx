@@ -41,13 +41,11 @@ export function HomePage({ offlineReady }: { offlineReady: boolean }) {
   const [error, setError] = useState<string>();
   const [working, setWorking] = useState(false);
 
-  const loadSample = async () => {
+  const loadBundledMatchDay = async (filename: string) => {
     setWorking(true);
     setError(undefined);
     try {
-      const response = await fetch(
-        `${import.meta.env.BASE_URL}seed/seed-krokelvdalen-2.json`,
-      );
+      const response = await fetch(`${import.meta.env.BASE_URL}seed/${filename}`);
       if (!response.ok) throw new Error("Eksempelfilen kunne ikke lastes.");
       const tournamentId = await importSeed(
         await response.text(),
@@ -155,6 +153,19 @@ export function HomePage({ offlineReady }: { offlineReady: boolean }) {
         />
       </div>
 
+      <Card className="card--accent">
+        <p className="eyebrow">Klar spilldag</p>
+        <h2>Storm BLÅ · 12. september</h2>
+        <p className="muted">5 spillere · 4 kamper · første kamp 11:30 på Bane 1</p>
+        <Button
+          full
+          disabled={working}
+          onClick={() => void loadBundledMatchDay("seed-storm-bla-2026-09-12.json")}
+        >
+          {working ? "Laster …" : "Last inn Storm BLÅ"}
+        </Button>
+      </Card>
+
       {error && (
         <div className="notice" role="alert">
           {error}
@@ -175,7 +186,10 @@ export function HomePage({ offlineReady }: { offlineReady: boolean }) {
           <EmptyState
             title="Ingen spilldager ennå"
             action={
-              <Button disabled={working} onClick={() => void loadSample()}>
+              <Button
+                disabled={working}
+                onClick={() => void loadBundledMatchDay("seed-krokelvdalen-2.json")}
+              >
                 {working ? "Laster …" : "Last inn eksempel"}
               </Button>
             }
@@ -207,7 +221,10 @@ export function HomePage({ offlineReady }: { offlineReady: boolean }) {
       </section>
 
       {state.data.tournaments.length > 0 && (
-        <Button disabled={working} onClick={() => void loadSample()}>
+        <Button
+          disabled={working}
+          onClick={() => void loadBundledMatchDay("seed-krokelvdalen-2.json")}
+        >
           {working ? "Laster eksempel …" : "Last inn eksempelspilldag"}
         </Button>
       )}

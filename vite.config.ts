@@ -19,6 +19,7 @@ export default defineConfig({
         "icons/icon-maskable-512.png",
         "icons/apple-touch-icon.png",
         "seed/seed-krokelvdalen-2.json",
+        "seed/seed-storm-bla-2026-09-12.json",
       ],
       manifest: {
         name: "FairPlay Sideline",

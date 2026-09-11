@@ -1,0 +1,125 @@
+{
+  "format": "fairplay-sideline-seed",
+  "schemaVersion": 1,
+  "tournament": {
+    "id": "tournament-storm-bla-2026-09-12",
+    "name": "Spilldag – Kroken 12. september 2026",
+    "date": "2026-09-12",
+    "timezone": "Europe/Oslo",
+    "teamName": "Storm BLÅ",
+    "coachLabel": "Michael",
+    "defaultMatchDurationMs": 720000,
+    "defaultPlayersOnField": 3,
+    "defaultMinimumStintMs": 60000,
+    "defaultAlertLeadMs": 10000,
+    "fairnessScope": "tournament"
+  },
+  "players": [
+    {
+      "id": "storm-player-ask",
+      "name": "Ask",
+      "sortOrder": 0,
+      "active": true,
+      "membership": "team"
+    },
+    {
+      "id": "storm-player-ali",
+      "name": "Ali",
+      "sortOrder": 1,
+      "active": true,
+      "membership": "team"
+    },
+    {
+      "id": "storm-player-kai",
+      "name": "Kai",
+      "sortOrder": 2,
+      "active": true,
+      "membership": "team"
+    },
+    {
+      "id": "storm-player-fredrik",
+      "name": "Fredrik",
+      "sortOrder": 3,
+      "active": true,
+      "membership": "team"
+    },
+    {
+      "id": "storm-player-martin",
+      "name": "Martin",
+      "sortOrder": 4,
+      "active": true,
+      "membership": "team"
+    }
+  ],
+  "matches": [
+    {
+      "id": "storm-match-1-tuil-bla",
+      "order": 0,
+      "scheduledStartLocal": "2026-09-12T11:30:00",
+      "opponent": "TUIL Blå",
+      "pitch": "1",
+      "plannedDurationMs": 720000,
+      "playersOnField": 3,
+      "eligiblePlayerIds": [
+        "storm-player-ask",
+        "storm-player-ali",
+        "storm-player-kai",
+        "storm-player-fredrik",
+        "storm-player-martin"
+      ]
+    },
+    {
+      "id": "storm-match-2-ulfstind-rod",
+      "order": 1,
+      "scheduledStartLocal": "2026-09-12T12:00:00",
+      "opponent": "Ulfstind Rød",
+      "pitch": "1",
+      "plannedDurationMs": 720000,
+      "playersOnField": 3,
+      "eligiblePlayerIds": [
+        "storm-player-ask",
+        "storm-player-ali",
+        "storm-player-kai",
+        "storm-player-fredrik",
+        "storm-player-martin"
+      ]
+    },
+    {
+      "id": "storm-match-3-reinen-bla",
+      "order": 2,
+      "scheduledStartLocal": "2026-09-12T12:45:00",
+      "opponent": "Reinen IL Blå",
+      "pitch": "1",
+      "plannedDurationMs": 720000,
+      "playersOnField": 3,
+      "eligiblePlayerIds": [
+        "storm-player-ask",
+        "storm-player-ali",
+        "storm-player-kai",
+        "storm-player-fredrik",
+        "storm-player-martin"
+      ]
+    },
+    {
+      "id": "storm-match-4-reinen-hvit",
+      "order": 3,
+      "scheduledStartLocal": "2026-09-12T13:15:00",
+      "opponent": "Reinen IL Hvit",
+      "pitch": "1",
+      "plannedDurationMs": 720000,
+      "playersOnField": 3,
+      "eligiblePlayerIds": [
+        "storm-player-ask",
+        "storm-player-ali",
+        "storm-player-kai",
+        "storm-player-fredrik",
+        "storm-player-martin"
+      ]
+    }
+  ],
+  "suggestedFirstMatchStarters": [
+    "storm-player-ask",
+    "storm-player-ali",
+    "storm-player-kai"
+  ]
+}

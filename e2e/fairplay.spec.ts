@@ -231,3 +231,22 @@ test("a reusable guest shares the match target without team carry", async ({
   ).toHaveCount(0);
   await expect(page.getByText(/Gjestespillere.*teller ikke her/)).toBeVisible();
 });
+
+test("loads the Storm BLÅ match day from the home screen", async ({ page }) => {
+  await openWithClock(page);
+  await page.getByRole("button", { name: "Last inn Storm BLÅ" }).click();
+
+  await expect(page.getByRole("heading", { name: "Storm BLÅ" })).toBeVisible();
+  await expect(page.getByText("5 lagspillere")).toBeVisible();
+  await expect(page.getByText("11:30 · Bane 1 · 12:00")).toBeVisible();
+  await expect(page.getByText("mot TUIL Blå")).toBeVisible();
+  await page.getByRole("button", { name: /Kamper\s+0 av 4 ferdige/ }).click();
+  for (const opponent of [
+    "TUIL Blå",
+    "Ulfstind Rød",
+    "Reinen IL Blå",
+    "Reinen IL Hvit",
+  ]) {
+    await expect(page.getByText(`mot ${opponent}`)).toBeVisible();
+  }
+});
