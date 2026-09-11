@@ -368,12 +368,20 @@
 }
 
 .recommendation__status {
-  margin-bottom: 5px;
-  color: var(--brand);
-  font-size: 0.93rem;
+  display: inline-flex;
+  min-height: 42px;
+  align-items: center;
+  margin-bottom: 12px;
+  padding: 7px 14px;
+  border: 2px solid color-mix(in srgb, var(--brand), transparent 18%);
+  border-radius: 999px;
+  background: var(--brand);
+  box-shadow: 0 5px 16px color-mix(in srgb, var(--brand), transparent 76%);
+  color: var(--brand-text);
+  font-size: clamp(1.05rem, 4.5vw, 1.35rem);
   font-variant-numeric: tabular-nums;
   font-weight: 850;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.035em;
   text-transform: uppercase;
 }
 
@@ -408,14 +416,23 @@
   letter-spacing: 0.06em;
 }
 
-.recommendation--due .recommendation__status,
+.recommendation--due .recommendation__status {
+  border-color: var(--danger);
+  background: var(--danger);
+  box-shadow: 0 5px 18px color-mix(in srgb, var(--danger), transparent 68%);
+  color: var(--surface);
+}
+
 .recommendation--due .swap-names span,
 .overdue {
   color: var(--danger);
 }
 
 .recommendation--prepare .recommendation__status {
-  color: var(--warning);
+  border-color: var(--warning);
+  background: var(--warning);
+  box-shadow: 0 5px 18px color-mix(in srgb, var(--warning), transparent 70%);
+  color: var(--surface);
 }
 
 .live-page--prepare .live-hero {
@@ -901,6 +918,13 @@
   .recommendation {
     min-height: 66px;
     margin-bottom: 2px;
+  }
+
+  .recommendation__status {
+    min-height: 34px;
+    margin-bottom: 5px;
+    padding: 4px 10px;
+    font-size: 0.9rem;
   }
 
   .swap-names strong {
