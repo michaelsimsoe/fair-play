@@ -63,9 +63,12 @@ export async function calculateTournamentTotals(
       events: await repository.getMatchEvents(match.id),
     })),
   );
+  const projectedMatches = histories.map(({ match, events }) => ({
+    match,
+    projection: projectStoredMatch(match, events),
+  }));
 
-  for (const { match, events } of histories) {
-    const projection = projectStoredMatch(match, events);
+  for (const { projection } of projectedMatches) {
     for (const player of bundle.players) {
       const total = totals[player.id];
       if (!total || player.membership === "guest") continue;
@@ -75,7 +78,34 @@ export async function calculateTournamentTotals(
       total.balanceMs = total.actualMs - total.idealMs;
     }
   }
+  const projectionByMatchId = new Map(
+    projectedMatches.map(({ match, projection }) => [match.id, projection]),
+  );
+  for (const player of bundle.players) {
+    if (player.membership === "guest") continue;
+    const total = totals[player.id];
+    if (!total) continue;
+    total.balanceMs += player.fairnessAdjustments
+      .filter((adjustment) => {
+        const projection = projectionByMatchId.get(adjustment.matchId);
+        return projection && adjustment.elapsedMs <= projection.elapsedMs;
+      })
+      .reduce((sum, adjustment) => sum + adjustment.amountMs, 0);
+  }
   return totals;
+}
+
+export function fairnessAdjustmentForMatch(
+  player: PlayerRecord,
+  matchId: string,
+  elapsedMs: number,
+): number {
+  return player.fairnessAdjustments
+    .filter(
+      (adjustment) =>
+        adjustment.matchId === matchId && adjustment.elapsedMs <= elapsedMs,
+    )
+    .reduce((sum, adjustment) => sum + adjustment.amountMs, 0);
 }
 
 export function playerName(

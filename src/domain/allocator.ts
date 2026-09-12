@@ -39,13 +39,33 @@ export function allocateBoundedCapacity(
   maximumMsPerPlayer: number,
   orderedPlayerIds: readonly PlayerId[],
 ): Record<PlayerId, number> {
-  if (!Number.isInteger(capacity) || capacity < 0)
-    throw new RangeError("capacity must be a non-negative integer.");
   if (!Number.isInteger(maximumMsPerPlayer) || maximumMsPerPlayer < 0)
     throw new RangeError("maximumMsPerPlayer must be a non-negative integer.");
+  return allocateCapacityWithMaximums(
+    balancesMsByPlayer,
+    capacity,
+    Object.fromEntries(orderedPlayerIds.map((id) => [id, maximumMsPerPlayer])),
+    orderedPlayerIds,
+  );
+}
+
+function allocateCapacityWithMaximums(
+  balancesMsByPlayer: Readonly<Record<PlayerId, number>>,
+  capacity: number,
+  maximumMsByPlayer: Readonly<Record<PlayerId, number>>,
+  orderedPlayerIds: readonly PlayerId[],
+): Record<PlayerId, number> {
+  if (!Number.isInteger(capacity) || capacity < 0)
+    throw new RangeError("capacity must be a non-negative integer.");
   if (new Set(orderedPlayerIds).size !== orderedPlayerIds.length)
     throw new RangeError("Player order must not contain duplicates.");
-  if (capacity > maximumMsPerPlayer * orderedPlayerIds.length)
+  const maximums = orderedPlayerIds.map((id) => {
+    const maximum = maximumMsByPlayer[id];
+    if (typeof maximum !== "number" || !Number.isInteger(maximum) || maximum < 0)
+      throw new RangeError(`Maximum for ${String(id)} must be a non-negative integer.`);
+    return maximum;
+  });
+  if (capacity > maximums.reduce<number>((sum, maximum) => sum + maximum, 0))
     throw new RangeError("Capacity exceeds player bounds.");
   const allocation = Object.fromEntries(
     orderedPlayerIds.map((id) => [id, 0]),
@@ -58,12 +78,12 @@ export function allocateBoundedCapacity(
       throw new RangeError(`Balance for ${String(id)} must be finite.`);
     return balance;
   });
-  let low = Math.min(...balances.map((balance) => balance! - maximumMsPerPlayer));
-  let high = Math.max(...balances.map((balance) => balance! + maximumMsPerPlayer));
+  let low = Math.min(...balances.map((balance, index) => balance! - maximums[index]!));
+  let high = Math.max(...balances.map((balance, index) => balance! + maximums[index]!));
   for (let iteration = 0; iteration < 100; iteration += 1) {
     const level = (low + high) / 2;
     const sum = balances.reduce<number>(
-      (total, balance) => total + clamp(level - balance!, 0, maximumMsPerPlayer),
+      (total, balance, index) => total + clamp(level - balance!, 0, maximums[index]!),
       0,
     );
     if (sum < capacity) low = level;
@@ -71,7 +91,7 @@ export function allocateBoundedCapacity(
   }
   const level = (low + high) / 2;
   const fractions = orderedPlayerIds.map((id, index) => {
-    const raw = clamp(level - balances[index]!, 0, maximumMsPerPlayer);
+    const raw = clamp(level - balances[index]!, 0, maximums[index]!);
     const floored = Math.floor(raw);
     allocation[id] = floored;
     return { id, remainder: raw - floored };
@@ -87,7 +107,7 @@ export function allocateBoundedCapacity(
     let changed = false;
     for (const { id } of fractions) {
       if (missing === 0) break;
-      if (allocation[id]! < maximumMsPerPlayer) {
+      if (allocation[id]! < maximumMsByPlayer[id]!) {
         allocation[id] = allocation[id]! + 1;
         missing -= 1;
         changed = true;
@@ -96,4 +116,85 @@ export function allocateBoundedCapacity(
     if (!changed) throw new Error("Unable to distribute allocation capacity.");
   }
   return allocation;
+}
+
+export type AllocationCapRelaxation = Readonly<{
+  playerId: PlayerId;
+  maximumMs: number;
+  allocatedMs: number;
+  exceededMs: number;
+}>;
+
+export type CappedAllocation = Readonly<{
+  allocationMsByPlayer: Readonly<Record<PlayerId, number>>;
+  capsFeasible: boolean;
+  capRelaxations: readonly AllocationCapRelaxation[];
+}>;
+
+/**
+ * Allocates exact integer capacity under individual caps. When the caps
+ * cannot fill the field, every cap is honoured first and only the unavoidable
+ * remainder is assigned, from the least-over-target player upward.
+ */
+export function allocateCappedCapacity(
+  balancesMsByPlayer: Readonly<Record<PlayerId, number>>,
+  capacity: number,
+  maximumMsByPlayer: Readonly<Record<PlayerId, number>>,
+  maximumMsPerPlayer: number,
+  orderedPlayerIds: readonly PlayerId[],
+): CappedAllocation {
+  if (!Number.isInteger(capacity) || capacity < 0)
+    throw new RangeError("capacity must be a non-negative integer.");
+  if (!Number.isInteger(maximumMsPerPlayer) || maximumMsPerPlayer < 0)
+    throw new RangeError("maximumMsPerPlayer must be a non-negative integer.");
+  const maximums = Object.fromEntries(
+    orderedPlayerIds.map((id) => {
+      const maximum = maximumMsByPlayer[id];
+      if (typeof maximum !== "number" || !Number.isInteger(maximum) || maximum < 0)
+        throw new RangeError(
+          `Maximum for ${String(id)} must be a non-negative integer.`,
+        );
+      return [id, Math.min(maximum, maximumMsPerPlayer)];
+    }),
+  ) as Record<PlayerId, number>;
+  const cappedCapacity = orderedPlayerIds.reduce((sum, id) => sum + maximums[id]!, 0);
+  if (cappedCapacity >= capacity) {
+    return {
+      allocationMsByPlayer: allocateCapacityWithMaximums(
+        balancesMsByPlayer,
+        capacity,
+        maximums,
+        orderedPlayerIds,
+      ),
+      capsFeasible: true,
+      capRelaxations: [],
+    };
+  }
+
+  const remainingMaximums = Object.fromEntries(
+    orderedPlayerIds.map((id) => [id, maximumMsPerPlayer - maximums[id]!]),
+  ) as Record<PlayerId, number>;
+  const excess = allocateCapacityWithMaximums(
+    Object.fromEntries(
+      orderedPlayerIds.map((id) => [id, (balancesMsByPlayer[id] ?? 0) + maximums[id]!]),
+    ),
+    capacity - cappedCapacity,
+    remainingMaximums,
+    orderedPlayerIds,
+  );
+  const allocationMsByPlayer = Object.fromEntries(
+    orderedPlayerIds.map((id) => [id, maximums[id]! + excess[id]!]),
+  ) as Record<PlayerId, number>;
+  return {
+    allocationMsByPlayer,
+    capsFeasible: false,
+    capRelaxations: orderedPlayerIds
+      .filter((id) => excess[id]! > 0)
+      .map((playerId) => ({
+        playerId,
+        maximumMs: maximums[playerId]!,
+        allocatedMs: allocationMsByPlayer[playerId]!,
+        exceededMs: excess[playerId]!,
+      })),
+  };
 }

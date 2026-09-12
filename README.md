@@ -10,6 +10,11 @@ the team's tournament balance. Manual substitutions start directly from an
 on-field player card, and projected differences within 30 seconds are shown
 without forcing disruptive catch-up stints.
 
+An injured player can be paused for the current match, through the next match, or
+for the rest of the day. The coach can preserve their existing difference for
+gradual compensation capped at one extra minute per match, or waive it and
+continue from neutral.
+
 The interface is Norwegian Bokmål. The implementation and tests are English.
 
 ## Run locally

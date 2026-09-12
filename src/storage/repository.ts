@@ -6,6 +6,7 @@ import {
   defaultSettings,
   matchEventSchema,
   matchSchema,
+  playerSchema,
   normalizePlayerName,
   type ActiveMatchJournalRecord,
   type AppSettingsRecord,
@@ -33,6 +34,60 @@ export type CreateTournamentInput = {
   defaultAlertLeadMs: number;
   fairnessScope: "tournament" | "match";
 };
+
+export type ParticipationPauseRemoval = {
+  playerId: string;
+  participationPauseId: string;
+  fairnessAdjustmentId?: string;
+};
+
+function recomputeParticipationPauses(
+  player: PlayerRecord,
+  matches: readonly MatchRecord[],
+): PlayerRecord {
+  const orderedMatches = [...matches].sort((left, right) => left.order - right.order);
+  const participationPauses = player.participationPauses.map((pause) => {
+    if (!pause.availabilityActive) return { ...pause, matchIds: [] };
+    const origin = orderedMatches.find((match) => match.id === pause.originMatchId);
+    if (!origin) return { ...pause, matchIds: [] };
+    const futurePlayable = orderedMatches.filter(
+      (match) =>
+        match.order > origin.order &&
+        match.status !== "completed" &&
+        match.status !== "abandoned",
+    );
+    const existingNext = pause.matchIds
+      .filter((id) => id !== origin.id)
+      .map((id) => orderedMatches.find((match) => match.id === id))
+      .find((match) => match !== undefined);
+    const matchIds =
+      pause.scope === "current"
+        ? origin.status === "completed" || origin.status === "abandoned"
+          ? []
+          : [origin.id]
+        : pause.scope === "through-next"
+          ? existingNext?.status === "completed" || existingNext?.status === "abandoned"
+            ? []
+            : [origin.id, ...futurePlayable.slice(0, 1).map((match) => match.id)]
+          : [
+              ...(origin.status === "completed" || origin.status === "abandoned"
+                ? []
+                : [origin.id]),
+              ...futurePlayable.map((match) => match.id),
+            ];
+    return { ...pause, matchIds };
+  });
+  return {
+    ...player,
+    participationPauses,
+    unavailableMatchIds: [
+      ...new Set([
+        ...player.explicitUnavailableMatchIds,
+        ...participationPauses.flatMap((pause) => pause.matchIds),
+      ]),
+    ],
+  };
+}
 
 export class FairPlayRepository {
   constructor(private readonly database: FairPlayDatabase = defaultDatabase) {}
@@ -132,6 +187,10 @@ export class FairPlayRepository {
       sortOrder: players.length,
       active: true,
       membership,
+      explicitUnavailableMatchIds: [],
+      unavailableMatchIds: [],
+      participationPauses: [],
+      fairnessAdjustments: [],
       createdAtWallMs: Date.now(),
     };
     await this.database.players.add(player);
@@ -253,38 +312,47 @@ export class FairPlayRepository {
       playersOnField?: number;
     },
   ): Promise<MatchRecord> {
-    const matches = await this.database.matches
-      .where("tournamentId")
-      .equals(tournament.id)
-      .toArray();
-    const players = await this.database.players
-      .where("tournamentId")
-      .equals(tournament.id)
-      .filter((player) => player.active && player.membership === "team")
-      .toArray();
-    const now = Date.now();
-    const match: MatchRecord = {
-      id: crypto.randomUUID(),
-      tournamentId: tournament.id,
-      order: matches.length,
-      plannedDurationMs: values.plannedDurationMs ?? tournament.defaultMatchDurationMs,
-      playersOnField: values.playersOnField ?? tournament.defaultPlayersOnField,
-      minimumStintMs: tournament.defaultMinimumStintMs,
-      alertLeadMs: tournament.defaultAlertLeadMs,
-      eligiblePlayerIds: players.map((player) => player.id),
-      status: "scheduled",
-      createdAtWallMs: now,
-      updatedAtWallMs: now,
-      ...(values.scheduledStartLocal
-        ? { scheduledStartLocal: values.scheduledStartLocal }
-        : {}),
-      ...(values.opponent ? { opponent: values.opponent } : {}),
-      ...(values.pitch ? { pitch: values.pitch } : {}),
-      ...(values.notes ? { notes: values.notes } : {}),
-    };
-    await this.database.matches.add(match);
-    await this.touchTournament(tournament.id);
-    return match;
+    return this.database.transaction(
+      "rw",
+      [this.database.matches, this.database.players, this.database.tournaments],
+      async () => {
+        const [matches, allPlayers] = await Promise.all([
+          this.database.matches.where("tournamentId").equals(tournament.id).toArray(),
+          this.database.players.where("tournamentId").equals(tournament.id).toArray(),
+        ]);
+        const teamPlayers = allPlayers.filter(
+          (player) => player.active && player.membership === "team",
+        );
+        const now = Date.now();
+        const match: MatchRecord = {
+          id: crypto.randomUUID(),
+          tournamentId: tournament.id,
+          order: matches.length,
+          plannedDurationMs:
+            values.plannedDurationMs ?? tournament.defaultMatchDurationMs,
+          playersOnField: values.playersOnField ?? tournament.defaultPlayersOnField,
+          minimumStintMs: tournament.defaultMinimumStintMs,
+          alertLeadMs: tournament.defaultAlertLeadMs,
+          eligiblePlayerIds: teamPlayers.map((player) => player.id),
+          status: "scheduled",
+          createdAtWallMs: now,
+          updatedAtWallMs: now,
+          ...(values.scheduledStartLocal
+            ? { scheduledStartLocal: values.scheduledStartLocal }
+            : {}),
+          ...(values.opponent ? { opponent: values.opponent } : {}),
+          ...(values.pitch ? { pitch: values.pitch } : {}),
+          ...(values.notes ? { notes: values.notes } : {}),
+        };
+        const pausedPlayerUpdates = allPlayers.map((player) =>
+          recomputeParticipationPauses(player, [...matches, match]),
+        );
+        await this.database.matches.add(match);
+        await this.database.players.bulkPut(pausedPlayerUpdates);
+        await this.touchTournament(tournament.id);
+        return match;
+      },
+    );
   }
 
   async updateMatch(match: MatchRecord): Promise<void> {
@@ -293,84 +361,201 @@ export class FairPlayRepository {
   }
 
   async duplicateMatch(matchId: string): Promise<MatchRecord> {
-    const match = await this.database.matches.get(matchId);
-    if (!match) throw new Error("Kampen finnes ikke.");
-    const matches = await this.database.matches
-      .where("tournamentId")
-      .equals(match.tournamentId)
-      .toArray();
-    const now = Date.now();
-    const duplicate: MatchRecord = {
-      ...match,
-      id: crypto.randomUUID(),
-      order: matches.length,
-      status: "scheduled",
-      createdAtWallMs: now,
-      updatedAtWallMs: now,
-    };
-    delete duplicate.selectedStarterIds;
-    await this.database.matches.add(duplicate);
-    await this.touchTournament(match.tournamentId);
-    return duplicate;
+    return this.database.transaction(
+      "rw",
+      [this.database.matches, this.database.players, this.database.tournaments],
+      async () => {
+        const match = await this.database.matches.get(matchId);
+        if (!match) throw new Error("Kampen finnes ikke.");
+        const [matches, allPlayers] = await Promise.all([
+          this.database.matches
+            .where("tournamentId")
+            .equals(match.tournamentId)
+            .toArray(),
+          this.database.players
+            .where("tournamentId")
+            .equals(match.tournamentId)
+            .toArray(),
+        ]);
+        const now = Date.now();
+        const duplicate: MatchRecord = {
+          ...match,
+          id: crypto.randomUUID(),
+          order: matches.length,
+          status: "scheduled",
+          createdAtWallMs: now,
+          updatedAtWallMs: now,
+        };
+        delete duplicate.selectedStarterIds;
+        const pausedPlayerUpdates = allPlayers.map((player) =>
+          recomputeParticipationPauses(player, [...matches, duplicate]),
+        );
+        await this.database.matches.add(duplicate);
+        await this.database.players.bulkPut(pausedPlayerUpdates);
+        await this.touchTournament(match.tournamentId);
+        return duplicate;
+      },
+    );
   }
 
   async reorderMatches(
     tournamentId: string,
     orderedIds: readonly string[],
   ): Promise<void> {
-    const matches = await this.database.matches
-      .where("tournamentId")
-      .equals(tournamentId)
-      .toArray();
-    const byId = new Map(matches.map((match) => [match.id, match]));
-    const ordered = orderedIds.map((id, index) => {
-      const match = byId.get(id);
-      if (!match) throw new Error("Kunne ikke endre kamprekkefølgen.");
-      return { ...match, order: index, updatedAtWallMs: Date.now() };
-    });
-    if (ordered.length !== matches.length) {
-      throw new Error("Alle kampene må være med i rekkefølgen.");
-    }
     await this.database.transaction(
       "rw",
-      [this.database.matches, this.database.tournaments],
+      [this.database.matches, this.database.players, this.database.tournaments],
       async () => {
+        const [matches, players] = await Promise.all([
+          this.database.matches.where("tournamentId").equals(tournamentId).toArray(),
+          this.database.players.where("tournamentId").equals(tournamentId).toArray(),
+        ]);
+        const byId = new Map(matches.map((match) => [match.id, match]));
+        const ordered = orderedIds.map((id, index) => {
+          const match = byId.get(id);
+          if (!match) throw new Error("Kunne ikke endre kamprekkefølgen.");
+          return { ...match, order: index, updatedAtWallMs: Date.now() };
+        });
+        if (ordered.length !== matches.length) {
+          throw new Error("Alle kampene må være med i rekkefølgen.");
+        }
+        const updatedPlayers = players.map((player) =>
+          recomputeParticipationPauses(player, ordered),
+        );
         await this.database.matches.bulkPut(ordered);
+        await this.database.players.bulkPut(updatedPlayers);
         await this.touchTournament(tournamentId);
       },
     );
   }
 
   async deleteUnstartedMatch(matchId: string): Promise<void> {
-    const match = await this.database.matches.get(matchId);
-    if (!match) return;
-    if (match.status !== "scheduled" && match.status !== "ready") {
-      throw new Error("En startet kamp må nullstilles før den kan slettes.");
-    }
-    await this.database.matches.delete(matchId);
-    await this.touchTournament(match.tournamentId);
+    await this.database.transaction(
+      "rw",
+      [this.database.matches, this.database.players, this.database.tournaments],
+      async () => {
+        const match = await this.database.matches.get(matchId);
+        if (!match) return;
+        if (match.status !== "scheduled" && match.status !== "ready") {
+          throw new Error("En startet kamp må nullstilles før den kan slettes.");
+        }
+        const [remainingMatches, players] = await Promise.all([
+          this.database.matches
+            .where("tournamentId")
+            .equals(match.tournamentId)
+            .filter((candidate) => candidate.id !== matchId)
+            .toArray(),
+          this.database.players
+            .where("tournamentId")
+            .equals(match.tournamentId)
+            .toArray(),
+        ]);
+        const normalizedMatches = remainingMatches
+          .sort((left, right) => left.order - right.order)
+          .map((candidate, order) => ({
+            ...candidate,
+            order,
+            updatedAtWallMs: Date.now(),
+          }));
+        const updatedPlayers = players.map((player) =>
+          recomputeParticipationPauses(player, normalizedMatches),
+        );
+        await this.database.matches.delete(matchId);
+        await this.database.matches.bulkPut(normalizedMatches);
+        await this.database.players.bulkPut(updatedPlayers);
+        await this.touchTournament(match.tournamentId);
+      },
+    );
   }
 
   async resetMatch(matchId: string): Promise<void> {
-    const match = await this.database.matches.get(matchId);
-    if (!match) throw new Error("Kampen finnes ikke.");
-    const reset: MatchRecord = {
-      ...match,
-      status: "scheduled",
-      updatedAtWallMs: Date.now(),
-    };
-    delete reset.selectedStarterIds;
     await this.database.transaction(
       "rw",
       [
         this.database.matches,
         this.database.matchEvents,
         this.database.activeMatchJournals,
+        this.database.players,
         this.database.tournaments,
       ],
       async () => {
+        const match = await this.database.matches.get(matchId);
+        if (!match) throw new Error("Kampen finnes ikke.");
+        const [events, tournamentMatches] = await Promise.all([
+          this.database.matchEvents.where("matchId").equals(matchId).sortBy("sequence"),
+          this.database.matches
+            .where("tournamentId")
+            .equals(match.tournamentId)
+            .toArray(),
+        ]);
+        const voidedIds = new Set(
+          events
+            .filter((event) => event.type === "EVENT_VOIDED")
+            .map((event) =>
+              event.type === "EVENT_VOIDED" ? event.payload.targetEventId : "",
+            ),
+        );
+        const pauseEvents = events.filter(
+          (
+            event,
+          ): event is Extract<
+            MatchEventRecord,
+            { type: "PLAYER_AVAILABILITY_CHANGED" }
+          > =>
+            event.type === "PLAYER_AVAILABILITY_CHANGED" &&
+            !voidedIds.has(event.id) &&
+            event.payload.pauseScope !== undefined &&
+            event.payload.participationPauseId !== undefined,
+        );
+        const tournamentPlayers = await this.database.players
+          .where("tournamentId")
+          .equals(match.tournamentId)
+          .toArray();
+        const reset: MatchRecord = {
+          ...match,
+          status: "scheduled",
+          updatedAtWallMs: Date.now(),
+        };
+        delete reset.selectedStarterIds;
+        const resetMatches = tournamentMatches.map((candidate) =>
+          candidate.id === reset.id ? reset : candidate,
+        );
+        const restoredPlayers = tournamentPlayers.map((player) => {
+          const playerPauseEvents = pauseEvents.filter(
+            (event) => event.payload.playerId === player.id,
+          );
+          const removedPauseIds = new Set(
+            playerPauseEvents.flatMap((event) =>
+              event.payload.participationPauseId
+                ? [event.payload.participationPauseId]
+                : [],
+            ),
+          );
+          const removedAdjustmentIds = new Set(
+            playerPauseEvents.flatMap((event) =>
+              event.payload.fairnessAdjustmentId
+                ? [event.payload.fairnessAdjustmentId]
+                : [],
+            ),
+          );
+          return recomputeParticipationPauses(
+            {
+              ...player,
+              participationPauses: player.participationPauses.filter(
+                (pause) => !removedPauseIds.has(pause.id),
+              ),
+              fairnessAdjustments: player.fairnessAdjustments.filter(
+                (adjustment) => !removedAdjustmentIds.has(adjustment.id),
+              ),
+            },
+            resetMatches,
+          );
+        });
         await this.database.matchEvents.where("matchId").equals(matchId).delete();
         await this.database.activeMatchJournals.delete(matchId);
+        if (restoredPlayers.length > 0) {
+          await this.database.players.bulkPut(restoredPlayers);
+        }
         await this.database.matches.put(reset);
         await this.touchTournament(match.tournamentId);
       },
@@ -400,6 +585,8 @@ export class FairPlayRepository {
     eventOrEvents: MatchEventRecord | readonly MatchEventRecord[],
     match: MatchRecord,
     journal?: ActiveMatchJournalRecord,
+    playerUpdates: readonly PlayerRecord[] = [],
+    pauseRemovals: readonly ParticipationPauseRemoval[] = [],
   ): Promise<void> {
     const events: MatchEventRecord[] =
       "type" in eventOrEvents ? [eventOrEvents] : [...eventOrEvents];
@@ -409,12 +596,16 @@ export class FairPlayRepository {
     const validatedJournal = journal
       ? activeMatchJournalSchema.parse(journal)
       : undefined;
+    const validatedPlayerUpdates = playerUpdates.map((player) =>
+      playerSchema.parse(player),
+    );
     await this.database.transaction(
       "rw",
       [
         this.database.matchEvents,
         this.database.matches,
         this.database.activeMatchJournals,
+        this.database.players,
         this.database.tournaments,
       ],
       async () => {
@@ -436,6 +627,42 @@ export class FairPlayRepository {
           await this.database.activeMatchJournals.put(validatedJournal);
         } else {
           await this.database.activeMatchJournals.delete(validatedMatch.id);
+        }
+        if (validatedPlayerUpdates.length > 0) {
+          await this.database.players.bulkPut(validatedPlayerUpdates);
+        }
+        if (pauseRemovals.length > 0) {
+          const currentPlayers = (
+            await this.database.players.bulkGet(
+              pauseRemovals.map((removal) => removal.playerId),
+            )
+          ).filter((player): player is PlayerRecord => player !== undefined);
+          const removalByPlayer = new Map(
+            pauseRemovals.map((removal) => [removal.playerId, removal]),
+          );
+          const correctedPlayers = currentPlayers.map((player) => {
+            const removal = removalByPlayer.get(player.id);
+            if (!removal) return player;
+            const participationPauses = player.participationPauses.filter(
+              (pause) => pause.id !== removal.participationPauseId,
+            );
+            return {
+              ...player,
+              participationPauses,
+              unavailableMatchIds: [
+                ...new Set([
+                  ...player.explicitUnavailableMatchIds,
+                  ...participationPauses.flatMap((pause) => pause.matchIds),
+                ]),
+              ],
+              fairnessAdjustments: removal.fairnessAdjustmentId
+                ? player.fairnessAdjustments.filter(
+                    (adjustment) => adjustment.id !== removal.fairnessAdjustmentId,
+                  )
+                : player.fairnessAdjustments,
+            };
+          });
+          await this.database.players.bulkPut(correctedPlayers);
         }
         await this.touchTournament(validatedMatch.tournamentId);
       },

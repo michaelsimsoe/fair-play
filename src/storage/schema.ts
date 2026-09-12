@@ -32,6 +32,33 @@ const playerBase = {
   normalizedName: z.string().min(1),
   sortOrder: z.number().int().nonnegative(),
   active: z.boolean(),
+  explicitUnavailableMatchIds: z.array(id),
+  unavailableMatchIds: z.array(id),
+  participationPauses: z.array(
+    z
+      .object({
+        id,
+        originMatchId: id,
+        scope: z.enum(["current", "through-next", "rest-day"]),
+        matchIds: z.array(id),
+        balanceTreatment: z.enum(["preserve", "waive"]),
+        availabilityActive: z.boolean(),
+        compensationActive: z.boolean(),
+      })
+      .strict(),
+  ),
+  fairnessAdjustments: z.array(
+    z
+      .object({
+        id,
+        matchId: id,
+        elapsedMs: milliseconds,
+        amountMs: z.number().int(),
+        recordedAtWallMs: wallTime,
+        reason: z.string().min(1),
+      })
+      .strict(),
+  ),
   createdAtWallMs: wallTime,
   archivedAtWallMs: wallTime.optional(),
 };
@@ -43,7 +70,18 @@ export const playerSchema = z
   })
   .strict();
 
-const legacyPlayerSchema = z.object(playerBase).strict();
+const legacyPlayerSchema = z
+  .object({
+    id,
+    tournamentId: id,
+    name: z.string().trim().min(1),
+    normalizedName: z.string().min(1),
+    sortOrder: z.number().int().nonnegative(),
+    active: z.boolean(),
+    createdAtWallMs: wallTime,
+    archivedAtWallMs: wallTime.optional(),
+  })
+  .strict();
 
 export const matchStatusSchema = z.enum([
   "scheduled",
@@ -138,6 +176,12 @@ export const matchEventSchema = z.discriminatedUnion("type", [
           previousAvailable: z.boolean().optional(),
           available: z.boolean(),
           reason: z.string().optional(),
+          pauseScope: z.enum(["current", "through-next", "rest-day"]).optional(),
+          balanceTreatment: z.enum(["preserve", "waive"]).optional(),
+          previousUnavailableMatchIds: z.array(id).optional(),
+          pausedMatchIds: z.array(id).optional(),
+          participationPauseId: id.optional(),
+          fairnessAdjustmentId: id.optional(),
         })
         .strict(),
     })
@@ -258,7 +302,7 @@ export const appSettingsSchema = z
 export const backupEnvelopeSchema = z
   .object({
     format: z.literal("fairplay-sideline-backup"),
-    schemaVersion: z.literal(2),
+    schemaVersion: z.literal(3),
     exportedAt: z.string().datetime(),
     appVersion: z.string().min(1),
     data: z
@@ -283,6 +327,26 @@ export const legacyBackupEnvelopeSchema = z
       .object({
         tournaments: z.array(tournamentSchema),
         players: z.array(legacyPlayerSchema),
+        matches: z.array(matchSchema),
+        matchEvents: z.array(matchEventSchema),
+        appSettings: appSettingsSchema,
+      })
+      .strict(),
+  })
+  .strict();
+
+export const legacyV2BackupEnvelopeSchema = z
+  .object({
+    format: z.literal("fairplay-sideline-backup"),
+    schemaVersion: z.literal(2),
+    exportedAt: z.string().datetime(),
+    appVersion: z.string().min(1),
+    data: z
+      .object({
+        tournaments: z.array(tournamentSchema),
+        players: z.array(
+          legacyPlayerSchema.extend({ membership: playerMembershipSchema }),
+        ),
         matches: z.array(matchSchema),
         matchEvents: z.array(matchEventSchema),
         appSettings: appSettingsSchema,

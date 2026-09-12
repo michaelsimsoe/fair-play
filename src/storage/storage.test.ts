@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import seed from "../../public/seed/seed-krokelvdalen-2.json";
 import stormSeed from "../../public/seed/seed-storm-bla-2026-09-12.json";
 import { projectMatch } from "../domain";
+import { calculateTournamentTotals } from "../features/shared/data";
 import {
   exportBackup,
   importBackup,
@@ -98,6 +99,210 @@ describe("FairPlayRepository", () => {
     ).rejects.toThrow(/etter at en kamp har startet/);
   });
 
+  it("propagates semantic future pauses to matches added later", async () => {
+    const tournament = await repository.createTournament(tournamentInput);
+    const player = await repository.addPlayer(tournament.id, "Ask");
+    const origin = await repository.addMatch(tournament, {
+      opponent: "Origin",
+    });
+    const pauseId = crypto.randomUUID();
+    await repository.updatePlayer({
+      ...player,
+      participationPauses: [
+        {
+          id: pauseId,
+          originMatchId: origin.id,
+          scope: "rest-day",
+          matchIds: [origin.id],
+          balanceTreatment: "preserve",
+          availabilityActive: true,
+          compensationActive: true,
+        },
+      ],
+      unavailableMatchIds: [origin.id],
+    });
+    const pausedPlayer = await database.players.get(player.id);
+    if (!pausedPlayer) throw new Error("Missing paused player");
+    await repository.updatePlayer({ ...pausedPlayer, active: false });
+
+    const match = await repository.addMatch(tournament, {
+      opponent: "Late addition",
+    });
+
+    const archived = await database.players.get(player.id);
+    if (!archived) throw new Error("Missing archived player");
+    await repository.updatePlayer({ ...archived, active: true });
+    const updated = await database.players.get(player.id);
+    expect(updated?.unavailableMatchIds).toContain(match.id);
+    expect(updated?.participationPauses[0]?.matchIds).toEqual([origin.id, match.id]);
+  });
+
+  it("uses a pending next-match pause exactly once", async () => {
+    const tournament = await repository.createTournament(tournamentInput);
+    const player = await repository.addPlayer(tournament.id, "Ask");
+    const origin = await repository.addMatch(tournament, {
+      opponent: "Origin",
+    });
+    const pauseId = crypto.randomUUID();
+    await repository.updatePlayer({
+      ...player,
+      participationPauses: [
+        {
+          id: pauseId,
+          originMatchId: origin.id,
+          scope: "through-next",
+          matchIds: [origin.id],
+          balanceTreatment: "preserve",
+          availabilityActive: true,
+          compensationActive: true,
+        },
+      ],
+      unavailableMatchIds: [origin.id],
+    });
+
+    const next = await repository.addMatch(tournament, { opponent: "Next" });
+    const later = await repository.addMatch(tournament, { opponent: "Later" });
+
+    const updated = await database.players.get(player.id);
+    expect(updated?.unavailableMatchIds).toContain(next.id);
+    expect(updated?.unavailableMatchIds).not.toContain(later.id);
+    expect(updated?.participationPauses[0]?.matchIds).toEqual([origin.id, next.id]);
+
+    await repository.reorderMatches(tournament.id, [origin.id, later.id, next.id]);
+    const reordered = await database.players.get(player.id);
+    expect(reordered?.participationPauses[0]?.matchIds).toEqual([origin.id, later.id]);
+    expect(reordered?.unavailableMatchIds).not.toContain(next.id);
+
+    await repository.deleteUnstartedMatch(later.id);
+    const afterDelete = await database.players.get(player.id);
+    expect(afterDelete?.participationPauses[0]?.matchIds).toEqual([origin.id, next.id]);
+
+    await repository.updateMatch({ ...next, status: "completed" });
+    const afterCompletedNext = await repository.addMatch(tournament, {
+      opponent: "After completed next",
+    });
+    const expired = await database.players.get(player.id);
+    expect(expired?.unavailableMatchIds).not.toContain(afterCompletedNext.id);
+    expect(expired?.participationPauses[0]?.matchIds).toEqual([]);
+  });
+
+  it("resetting an injured match restores pause and waiver metadata", async () => {
+    const tournament = await repository.createTournament(tournamentInput);
+    const player = await repository.addPlayer(tournament.id, "Ask");
+    const match = await repository.addMatch(tournament, {});
+    const laterMatch = await repository.addMatch(tournament, {});
+    const adjustmentId = crypto.randomUUID();
+    const pauseId = crypto.randomUUID();
+    const laterPauseId = crypto.randomUUID();
+    const pauseEvent: MatchEventRecord = {
+      id: pauseId,
+      matchId: match.id,
+      sequence: 1,
+      type: "PLAYER_AVAILABILITY_CHANGED",
+      elapsedMs: 60_000,
+      recordedAtWallMs: 60_001,
+      source: "user",
+      schemaVersion: 1,
+      payload: {
+        playerId: player.id,
+        previousAvailable: true,
+        available: false,
+        pauseScope: "rest-day",
+        balanceTreatment: "waive",
+        previousUnavailableMatchIds: [],
+        pausedMatchIds: [match.id],
+        participationPauseId: pauseId,
+        fairnessAdjustmentId: adjustmentId,
+      },
+    };
+    await database.matchEvents.add(pauseEvent);
+    await database.matches.put({ ...match, status: "completed" });
+    await database.players.put({
+      ...player,
+      unavailableMatchIds: [match.id, laterMatch.id],
+      participationPauses: [
+        {
+          id: pauseId,
+          originMatchId: match.id,
+          scope: "rest-day",
+          matchIds: [match.id],
+          balanceTreatment: "waive",
+          availabilityActive: true,
+          compensationActive: false,
+        },
+        {
+          id: laterPauseId,
+          originMatchId: laterMatch.id,
+          scope: "current",
+          matchIds: [laterMatch.id],
+          balanceTreatment: "preserve",
+          availabilityActive: true,
+          compensationActive: true,
+        },
+      ],
+      fairnessAdjustments: [
+        {
+          id: adjustmentId,
+          matchId: match.id,
+          elapsedMs: 60_000,
+          amountMs: 15_000,
+          recordedAtWallMs: 60_001,
+          reason: "Waived",
+        },
+      ],
+    });
+
+    await repository.resetMatch(match.id);
+
+    const restored = await database.players.get(player.id);
+    expect(restored?.unavailableMatchIds).toEqual([laterMatch.id]);
+    expect(restored?.participationPauses).toEqual([
+      {
+        id: laterPauseId,
+        originMatchId: laterMatch.id,
+        scope: "current",
+        matchIds: [laterMatch.id],
+        balanceTreatment: "preserve",
+        availabilityActive: true,
+        compensationActive: true,
+      },
+    ]);
+    expect(restored?.fairnessAdjustments).toEqual([]);
+    expect(await repository.getMatchEvents(match.id)).toEqual([]);
+  });
+
+  it("resetting a match reapplies pauses originating in an earlier match", async () => {
+    const tournament = await repository.createTournament(tournamentInput);
+    const player = await repository.addPlayer(tournament.id, "Ask");
+    const origin = await repository.addMatch(tournament, {});
+    const resetCandidate = await repository.addMatch(tournament, {});
+    await repository.updateMatch({ ...origin, status: "completed" });
+    await repository.updateMatch({
+      ...resetCandidate,
+      status: "completed",
+    });
+    await repository.updatePlayer({
+      ...player,
+      participationPauses: [
+        {
+          id: crypto.randomUUID(),
+          originMatchId: origin.id,
+          scope: "rest-day",
+          matchIds: [],
+          balanceTreatment: "preserve",
+          availabilityActive: true,
+          compensationActive: true,
+        },
+      ],
+    });
+
+    await repository.resetMatch(resetCandidate.id);
+
+    const restored = await database.players.get(player.id);
+    expect(restored?.unavailableMatchIds).toContain(resetCandidate.id);
+    expect(restored?.participationPauses[0]?.matchIds).toContain(resetCandidate.id);
+  });
+
   it("commits event, match status, and recovery journal atomically", async () => {
     const tournament = await repository.createTournament(tournamentInput);
     const match = await repository.addMatch(tournament, {});
@@ -139,6 +344,7 @@ describe("FairPlayRepository", () => {
 
   it("rolls back all writes when an atomic action conflicts", async () => {
     const tournament = await repository.createTournament(tournamentInput);
+    const player = await repository.addPlayer(tournament.id, "Ask");
     const match = await repository.addMatch(tournament, {});
     const event: MatchEventRecord = {
       id: crypto.randomUUID(),
@@ -154,11 +360,77 @@ describe("FairPlayRepository", () => {
     await database.matchEvents.add(event);
 
     await expect(
-      repository.commitMatchAction(event, { ...match, status: "paused" }),
+      repository.commitMatchAction(event, { ...match, status: "paused" }, undefined, [
+        { ...player, unavailableMatchIds: [match.id] },
+      ]),
     ).rejects.toThrow();
 
     expect((await repository.getMatch(match.id))?.status).toBe("scheduled");
     expect(await repository.getMatchEvents(match.id)).toHaveLength(1);
+    expect((await database.players.get(player.id))?.unavailableMatchIds).toEqual([]);
+  });
+
+  it("applies an explicit fairness waiver without rewriting actual or ideal time", async () => {
+    const tournament = await repository.createTournament(tournamentInput);
+    const players = await Promise.all(
+      ["Ask", "Ali", "Fredrik", "Lucas"].map((name) =>
+        repository.addPlayer(tournament.id, name),
+      ),
+    );
+    const match = await repository.addMatch(tournament, {});
+    const ask = players[0]!;
+    const events: MatchEventRecord[] = [
+      {
+        id: crypto.randomUUID(),
+        matchId: match.id,
+        sequence: 0,
+        type: "MATCH_STARTED",
+        elapsedMs: 0,
+        recordedAtWallMs: 1,
+        source: "user",
+        schemaVersion: 1,
+        payload: {
+          starterLineupIds: players.slice(0, 3).map(({ id }) => id),
+          availablePlayerIds: players.map(({ id }) => id),
+        },
+      },
+      {
+        id: crypto.randomUUID(),
+        matchId: match.id,
+        sequence: 1,
+        type: "MATCH_ENDED",
+        elapsedMs: 120_000,
+        recordedAtWallMs: 120_001,
+        source: "user",
+        schemaVersion: 1,
+        payload: {},
+      },
+    ];
+    await database.matchEvents.bulkAdd(events);
+    await database.matches.put({ ...match, status: "completed" });
+    await database.players.put({
+      ...ask,
+      fairnessAdjustments: [
+        {
+          id: crypto.randomUUID(),
+          matchId: match.id,
+          elapsedMs: 60_000,
+          amountMs: -30_000,
+          recordedAtWallMs: 60_001,
+          reason: "Test waiver",
+        },
+      ],
+    });
+    const bundle = await repository.getTournamentBundle(tournament.id);
+    if (!bundle) throw new Error("Missing tournament");
+
+    const totals = await calculateTournamentTotals(repository, bundle);
+
+    expect(totals[ask.id]).toEqual({
+      actualMs: 120_000,
+      idealMs: 90_000,
+      balanceMs: 0,
+    });
   });
 });
 
@@ -279,13 +551,55 @@ describe("backup and import", () => {
       data: { players: Array<Record<string, unknown>> };
     };
     current.schemaVersion = 1;
-    for (const player of current.data.players) delete player.membership;
+    for (const player of current.data.players) {
+      delete player.membership;
+      delete player.explicitUnavailableMatchIds;
+      delete player.unavailableMatchIds;
+      delete player.participationPauses;
+      delete player.fairnessAdjustments;
+    }
     const target = new FairPlayDatabase(`fairplay-legacy-${crypto.randomUUID()}`);
     await target.open();
 
     try {
       await importBackup(JSON.stringify(current), "restore", target);
-      expect((await target.players.toArray())[0]?.membership).toBe("team");
+      const imported = (await target.players.toArray())[0];
+      expect(imported?.membership).toBe("team");
+      expect(imported?.explicitUnavailableMatchIds).toEqual([]);
+      expect(imported?.unavailableMatchIds).toEqual([]);
+      expect(imported?.participationPauses).toEqual([]);
+      expect(imported?.fairnessAdjustments).toEqual([]);
+    } finally {
+      target.close();
+      await target.delete();
+    }
+  });
+
+  it("migrates v2 backups to participation-pause fields", async () => {
+    const tournament = await repository.createTournament(tournamentInput);
+    await repository.addPlayer(tournament.id, "Ask");
+    const current = JSON.parse(await exportBackup(database)) as {
+      schemaVersion: number;
+      data: { players: Array<Record<string, unknown>> };
+    };
+    current.schemaVersion = 2;
+    for (const player of current.data.players) {
+      delete player.explicitUnavailableMatchIds;
+      delete player.unavailableMatchIds;
+      delete player.participationPauses;
+      delete player.fairnessAdjustments;
+    }
+    const target = new FairPlayDatabase(`fairplay-v2-${crypto.randomUUID()}`);
+    await target.open();
+
+    try {
+      await importBackup(JSON.stringify(current), "restore", target);
+      const imported = (await target.players.toArray())[0];
+      expect(imported?.membership).toBe("team");
+      expect(imported?.explicitUnavailableMatchIds).toEqual([]);
+      expect(imported?.unavailableMatchIds).toEqual([]);
+      expect(imported?.participationPauses).toEqual([]);
+      expect(imported?.fairnessAdjustments).toEqual([]);
     } finally {
       target.close();
       await target.delete();
@@ -389,6 +703,12 @@ describe("schema migration", () => {
       await migrated.open();
       expect((await migrated.players.get("p1"))?.normalizedName).toBe("ask");
       expect((await migrated.players.get("p1"))?.membership).toBe("team");
+      expect((await migrated.players.get("p1"))?.unavailableMatchIds).toEqual([]);
+      expect((await migrated.players.get("p1"))?.explicitUnavailableMatchIds).toEqual(
+        [],
+      );
+      expect((await migrated.players.get("p1"))?.participationPauses).toEqual([]);
+      expect((await migrated.players.get("p1"))?.fairnessAdjustments).toEqual([]);
     } finally {
       migrated.close();
       await migrated.delete();

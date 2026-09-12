@@ -664,6 +664,19 @@
   margin-top: 12px;
 }
 
+.injury-options {
+  margin-top: 12px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--warning-soft), transparent 55%);
+}
+
+.injury-options__details {
+  padding: 12px 0 14px;
+  border-top: 1px solid var(--line);
+}
+
 .manual-summary span {
   margin-top: 5px;
   color: var(--muted);

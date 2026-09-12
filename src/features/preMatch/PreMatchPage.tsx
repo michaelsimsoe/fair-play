@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from "react";
+import { useMemo, useRef, useState, type FormEvent } from "react";
 import { navigate } from "../../app/router";
 import { useServices } from "../../app/services";
 import {
@@ -10,6 +10,7 @@ import { Button, Card, PageHeader, StatusPill } from "../../components/ui";
 import {
   DEFAULT_COMPENSATION_TOLERANCE_MS,
   DEFAULT_MINIMUM_BENCH_REST_MS,
+  DEFAULT_RETURN_COMPENSATION_CAP_MS,
   planRecommendation,
   playerId,
   type PlayerId,
@@ -63,6 +64,7 @@ function PreMatchReady({ data }: { data: ReadyData }) {
   const recommendedIds = useMemo(
     () =>
       [...eligiblePlayers]
+        .filter((player) => !player.unavailableMatchIds.includes(match.id))
         .sort(
           (left, right) =>
             (left.membership === "team" ? (priorTotals[left.id]?.balanceMs ?? 0) : 0) -
@@ -72,9 +74,11 @@ function PreMatchReady({ data }: { data: ReadyData }) {
         )
         .slice(0, match.playersOnField)
         .map((player) => player.id),
-    [eligiblePlayers, match.playersOnField, priorTotals],
+    [eligiblePlayers, match.id, match.playersOnField, priorTotals],
   );
-  const initialAvailable = eligiblePlayers.map((player) => player.id);
+  const initialAvailable = eligiblePlayers
+    .filter((player) => !player.unavailableMatchIds.includes(match.id))
+    .map((player) => player.id);
   const initialStarters =
     match.selectedStarterIds?.filter((id) => initialAvailable.includes(id)).length ===
     match.playersOnField
@@ -83,6 +87,9 @@ function PreMatchReady({ data }: { data: ReadyData }) {
   const [availableIds, setAvailableIds] = useState<string[]>(initialAvailable);
   const [starterIds, setStarterIds] = useState<string[]>(initialStarters ?? []);
   const [starting, setStarting] = useState(false);
+  const startInFlight = useRef(false);
+  const [availabilitySaving, setAvailabilitySaving] = useState(false);
+  const availabilityInFlight = useRef(false);
   const [addingGuest, setAddingGuest] = useState(false);
   const [error, setError] = useState<string>();
   const [audioMessage, setAudioMessage] = useState<string>();
@@ -98,6 +105,27 @@ function PreMatchReady({ data }: { data: ReadyData }) {
   const zeros = Object.fromEntries(
     eligiblePlayers.map((player) => [playerId(player.id), 0]),
   ) as Record<PlayerId, number>;
+  const normalMatchTargetMs =
+    availableIds.length > 0
+      ? (match.plannedDurationMs * match.playersOnField) / availableIds.length
+      : 0;
+  const maximumFutureActualMsByPlayer = Object.fromEntries(
+    eligiblePlayers
+      .filter(
+        (player) =>
+          availableIds.includes(player.id) &&
+          player.membership === "team" &&
+          player.participationPauses.some((pause) => pause.compensationActive) &&
+          (priorTotals[player.id]?.balanceMs ?? 0) < -DEFAULT_COMPENSATION_TOLERANCE_MS,
+      )
+      .map((player) => [
+        playerId(player.id),
+        Math.min(
+          match.plannedDurationMs,
+          Math.round(normalMatchTargetMs + DEFAULT_RETURN_COMPENSATION_CAP_MS),
+        ),
+      ]),
+  );
   const recommendation =
     starterIds.length === match.playersOnField &&
     availableIds.length >= match.playersOnField
@@ -110,6 +138,7 @@ function PreMatchReady({ data }: { data: ReadyData }) {
             .map((player) => playerId(player.id)),
           currentLineupIds: starterIds.map(playerId),
           balancesMsByPlayer: balances,
+          maximumFutureActualMsByPlayer,
           matchOnlyPlayerIds: eligiblePlayers
             .filter(
               (player) =>
@@ -128,28 +157,90 @@ function PreMatchReady({ data }: { data: ReadyData }) {
         })
       : undefined;
 
-  const toggleAvailability = (id: string) => {
-    if (availableIds.includes(id)) {
-      setAvailableIds((current) => current.filter((playerId) => playerId !== id));
-      setStarterIds((current) => current.filter((playerId) => playerId !== id));
-    } else {
-      setAvailableIds((current) => [...current, id]);
+  const toggleAvailability = async (id: string) => {
+    if (availabilityInFlight.current || startInFlight.current) return;
+    const player = players.find((candidate) => candidate.id === id);
+    if (!player) return;
+    availabilityInFlight.current = true;
+    setAvailabilitySaving(true);
+    setError(undefined);
+    try {
+      if (availableIds.includes(id)) {
+        const explicitUnavailableMatchIds = [
+          ...new Set([...player.explicitUnavailableMatchIds, match.id]),
+        ];
+        const updated = {
+          ...player,
+          explicitUnavailableMatchIds,
+          unavailableMatchIds: [
+            ...new Set([
+              ...explicitUnavailableMatchIds,
+              ...player.participationPauses.flatMap((pause) => pause.matchIds),
+            ]),
+          ],
+        };
+        await repository.updatePlayer(updated);
+        setPlayers((current) =>
+          current.map((candidate) => (candidate.id === id ? updated : candidate)),
+        );
+        setAvailableIds((current) => current.filter((playerId) => playerId !== id));
+        setStarterIds((current) => current.filter((playerId) => playerId !== id));
+      } else {
+        const explicitUnavailableMatchIds = player.explicitUnavailableMatchIds.filter(
+          (matchId) => matchId !== match.id,
+        );
+        const participationPauses = player.participationPauses.map((pause) =>
+          pause.matchIds.includes(match.id)
+            ? { ...pause, availabilityActive: false, matchIds: [] }
+            : pause,
+        );
+        const updated = {
+          ...player,
+          explicitUnavailableMatchIds,
+          participationPauses,
+          unavailableMatchIds: [
+            ...new Set([
+              ...explicitUnavailableMatchIds,
+              ...participationPauses.flatMap((pause) => pause.matchIds),
+            ]),
+          ],
+        };
+        await repository.updatePlayer(updated);
+        setPlayers((current) =>
+          current.map((candidate) => (candidate.id === id ? updated : candidate)),
+        );
+        setAvailableIds((current) => [...current, id]);
+      }
+    } catch (caught) {
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : "Tilgjengeligheten kunne ikke lagres.",
+      );
+    } finally {
+      availabilityInFlight.current = false;
+      setAvailabilitySaving(false);
     }
   };
 
   const toggleGuestParticipation = (id: string) => {
+    if (startInFlight.current) return;
     if (participantIds.includes(id)) {
       setParticipantIds((current) => current.filter((playerId) => playerId !== id));
       setAvailableIds((current) => current.filter((playerId) => playerId !== id));
       setStarterIds((current) => current.filter((playerId) => playerId !== id));
     } else {
       setParticipantIds((current) => [...current, id]);
-      setAvailableIds((current) => [...current, id]);
+      const player = players.find((candidate) => candidate.id === id);
+      if (!player?.unavailableMatchIds.includes(match.id)) {
+        setAvailableIds((current) => [...current, id]);
+      }
     }
   };
 
   const addGuest = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (startInFlight.current) return;
     const form = event.currentTarget;
     const name = formString(new FormData(form), "guestName");
     setAddingGuest(true);
@@ -170,6 +261,7 @@ function PreMatchReady({ data }: { data: ReadyData }) {
   };
 
   const toggleStarter = (id: string) => {
+    if (startInFlight.current) return;
     if (!availableIds.includes(id)) return;
     setStarterIds((current) =>
       current.includes(id)
@@ -190,6 +282,11 @@ function PreMatchReady({ data }: { data: ReadyData }) {
   };
 
   const startMatch = async () => {
+    if (availabilityInFlight.current) {
+      setError("Vent til tilgjengeligheten er lagret før kampen starter.");
+      return;
+    }
+    if (startInFlight.current) return;
     if (starterIds.length !== match.playersOnField) {
       setError(`Velg nøyaktig ${match.playersOnField} spillere på banen.`);
       return;
@@ -198,6 +295,7 @@ function PreMatchReady({ data }: { data: ReadyData }) {
       setError("Det er færre tilgjengelige spillere enn plasser på banen.");
       return;
     }
+    startInFlight.current = true;
     setStarting(true);
     setError(undefined);
 
@@ -233,6 +331,21 @@ function PreMatchReady({ data }: { data: ReadyData }) {
       lastEventSequence: 0,
       savedAtWallMs: now,
     };
+    const resolvedRecoveryPlayers = players
+      .filter(
+        (player) =>
+          player.membership === "team" &&
+          player.participationPauses.some((pause) => pause.compensationActive) &&
+          (priorTotals[player.id]?.balanceMs ?? 0) >=
+            -DEFAULT_COMPENSATION_TOLERANCE_MS,
+      )
+      .map((player) => ({
+        ...player,
+        participationPauses: player.participationPauses.map((pause) => ({
+          ...pause,
+          compensationActive: false,
+        })),
+      }));
     try {
       await repository.commitMatchAction(
         event,
@@ -243,12 +356,14 @@ function PreMatchReady({ data }: { data: ReadyData }) {
           status: "running",
         },
         journal,
+        resolvedRecoveryPlayers,
       );
       await enhancementRequests;
       navigate({ name: "live", matchId: match.id }, true);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Kampen kunne ikke startes.");
       setStarting(false);
+      startInFlight.current = false;
       await wakeLock.release();
     }
   };
@@ -289,11 +404,16 @@ function PreMatchReady({ data }: { data: ReadyData }) {
               <button
                 key={player.id}
                 aria-pressed={participantIds.includes(player.id)}
+                disabled={starting}
                 onClick={() => toggleGuestParticipation(player.id)}
               >
                 <strong>{player.name}</strong>
                 <span>
-                  {participantIds.includes(player.id) ? "Med i kampen" : "Ikke med"}
+                  {participantIds.includes(player.id)
+                    ? player.unavailableMatchIds.includes(match.id)
+                      ? "Med · deltakelsespause"
+                      : "Med i kampen"
+                    : "Ikke med"}
                 </span>
               </button>
             ))}
@@ -307,11 +427,11 @@ function PreMatchReady({ data }: { data: ReadyData }) {
             id="quick-guest-name"
             name="guestName"
             required
-            disabled={addingGuest}
+            disabled={addingGuest || starting}
             placeholder="Navn på ny gjest"
             autoComplete="off"
           />
-          <Button type="submit" disabled={addingGuest}>
+          <Button type="submit" disabled={addingGuest || starting}>
             {addingGuest ? "Legger til …" : "Legg til gjest"}
           </Button>
         </form>
@@ -332,7 +452,8 @@ function PreMatchReady({ data }: { data: ReadyData }) {
               <button
                 className="availability-toggle"
                 aria-pressed={availableIds.includes(player.id)}
-                onClick={() => toggleAvailability(player.id)}
+                disabled={availabilitySaving || starting}
+                onClick={() => void toggleAvailability(player.id)}
               >
                 <span aria-hidden="true">
                   {availableIds.includes(player.id) ? "✓" : "–"}
@@ -352,7 +473,9 @@ function PreMatchReady({ data }: { data: ReadyData }) {
                 <span>
                   {availableIds.includes(player.id)
                     ? "Tilgjengelig"
-                    : "Ikke tilgjengelig"}
+                    : player.unavailableMatchIds.includes(match.id)
+                      ? "Deltakelsespause"
+                      : "Ikke tilgjengelig"}
                 </span>
               </button>
             </li>
@@ -375,6 +498,7 @@ function PreMatchReady({ data }: { data: ReadyData }) {
               key={player.id}
               className="starter-card"
               aria-pressed={starterIds.includes(player.id)}
+              disabled={starting}
               onClick={() => toggleStarter(player.id)}
             >
               <span aria-hidden="true">
@@ -387,6 +511,7 @@ function PreMatchReady({ data }: { data: ReadyData }) {
         </div>
         <Button
           full
+          disabled={starting}
           onClick={() =>
             setStarterIds(
               recommendedIds
@@ -434,6 +559,7 @@ function PreMatchReady({ data }: { data: ReadyData }) {
         full
         disabled={
           starting ||
+          availabilitySaving ||
           starterIds.length !== match.playersOnField ||
           availableIds.length < match.playersOnField
         }

@@ -64,6 +64,21 @@ export type RecommendationReason =
   | "manual-deviation"
   | "short-time-remaining";
 
+export type FutureAllocationCapRelaxation = Readonly<{
+  playerId: PlayerId;
+  maximumFutureActualMs: number;
+  allocatedFutureActualMs: number;
+  relaxedByMs: number;
+}>;
+
+export type FutureAllocationCapDiagnostics = Readonly<{
+  capsFeasible: boolean;
+  requestedCapacityMs: number;
+  requiredCapacityMs: number;
+  allocatedFutureActualMsByPlayer: Readonly<Record<PlayerId, number>>;
+  relaxations: readonly FutureAllocationCapRelaxation[];
+}>;
+
 export type Recommendation = Readonly<{
   id: string;
   calculatedAtElapsedMs: number;
@@ -83,5 +98,6 @@ export type Recommendation = Readonly<{
     maximumAbsoluteCurrentMatchDifferenceMs: number;
     expectedSubstitutionCount: number;
     shortStintWarnings: readonly PlayerId[];
+    futureAllocationCaps: FutureAllocationCapDiagnostics;
   }>;
 }>;

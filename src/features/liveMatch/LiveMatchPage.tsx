@@ -19,6 +19,7 @@ import { Button, StatusPill } from "../../components/ui";
 import {
   DEFAULT_COMPENSATION_TOLERANCE_MS,
   DEFAULT_MINIMUM_BENCH_REST_MS,
+  DEFAULT_RETURN_COMPENSATION_CAP_MS,
   planRecommendation,
   playerId,
   type PlayerId,
@@ -27,27 +28,36 @@ import {
 import { browserClockSource } from "../../platform/browserClockSource";
 import { vibrateForChange } from "../../platform/vibration";
 import { onPageHiding, onVisibilityReturn } from "../../platform/visibility";
+import type { ParticipationPauseRemoval } from "../../storage/repository";
 import type {
   ActiveMatchJournalRecord,
   AppSettingsRecord,
   MatchEventRecord,
   MatchRecord,
+  PlayerRecord,
 } from "../../storage/schema";
 import {
   calculateTournamentTotals,
   currentIntervalDuration,
+  fairnessAdjustmentForMatch,
   lastPlanningElapsed,
   loadMatchData,
   playerName,
   projectStoredMatch,
 } from "../shared/data";
 import { useAsyncData } from "../shared/hooks";
+import {
+  participationPauseMatchIds,
+  type ParticipationPauseScope,
+} from "../shared/participationPause";
 
 type LoadedLiveData = Awaited<ReturnType<typeof loadMatchData>> & {
   journal: ActiveMatchJournalRecord | undefined;
   priorTotals: Awaited<ReturnType<typeof calculateTournamentTotals>>;
   settings: AppSettingsRecord;
 };
+
+type BalanceTreatment = "preserve" | "waive";
 
 export function LiveMatchPage({ matchId }: { matchId: string }) {
   const { repository } = useServices();
@@ -125,6 +135,7 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
   const initialClock = useMemo(() => createInitialClock(data), [data]);
   const clockRef = useRef(initialClock.clock);
   const [match, setMatch] = useState(data.match);
+  const [players, setPlayers] = useState(data.tournamentBundle.players);
   const [events, setEvents] = useState<MatchEventRecord[]>(data.events);
   const [elapsedMs, setElapsedMs] = useState(() => initialClock.clock.elapsedMs());
   const [planningElapsedMs, setPlanningElapsedMs] = useState(() =>
@@ -138,7 +149,10 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
   const [manualOpen, setManualOpen] = useState(false);
   const [manualOutgoing, setManualOutgoing] = useState<string>();
   const [manualIncoming, setManualIncoming] = useState<string>();
-  const [manualHoldOut, setManualHoldOut] = useState(false);
+  const [manualPauseScope, setManualPauseScope] =
+    useState<ParticipationPauseScope>("none");
+  const [manualBalanceTreatment, setManualBalanceTreatment] =
+    useState<BalanceTreatment>("preserve");
   const [projectionOpen, setProjectionOpen] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [availabilityAction, setAvailabilityAction] = useState<{
@@ -167,7 +181,7 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
   );
 
   const recommendation = useMemo<Recommendation | undefined>(() => {
-    const availableIds = bundle.players
+    const availableIds = players
       .filter((player) =>
         planningProjection.currentlyAvailableIds.includes(playerId(player.id)),
       )
@@ -182,12 +196,54 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
       availableIds.map((id) => [
         id,
         (planningProjection.fairnessBalanceMsByPlayer[id] ?? 0) +
-          (bundle.players.find((player) => player.id === id)?.membership === "team" &&
+          (players.find((player) => player.id === id)?.membership === "team" &&
           bundle.tournament.fairnessScope === "tournament"
             ? (priorTotals[id]?.balanceMs ?? 0)
-            : 0),
+            : 0) +
+          fairnessAdjustmentForMatch(
+            players.find((player) => player.id === id)!,
+            match.id,
+            planningElapsedMs,
+          ),
       ]),
     ) as Record<PlayerId, number>;
+    const remainingMs = match.plannedDurationMs - planningElapsedMs;
+    const futureIdealMs =
+      availableIds.length > 0
+        ? (remainingMs * match.playersOnField) / availableIds.length
+        : 0;
+    const maximumFutureActualMsByPlayer = Object.fromEntries(
+      availableIds.flatMap((id) => {
+        const player = players.find((candidate) => candidate.id === id);
+        if (
+          !player ||
+          player.membership !== "team" ||
+          !player.participationPauses.some((pause) => pause.compensationActive) ||
+          (priorTotals[id]?.balanceMs ?? 0) >= -DEFAULT_COMPENSATION_TOLERANCE_MS
+        ) {
+          return [];
+        }
+        const currentActual = planningProjection.actualMsByPlayer[id] ?? 0;
+        const finalNormalTarget =
+          (planningProjection.idealMsByPlayer[id] ?? 0) + futureIdealMs;
+        return [
+          [
+            id,
+            Math.max(
+              0,
+              Math.min(
+                remainingMs,
+                Math.round(
+                  finalNormalTarget +
+                    DEFAULT_RETURN_COMPENSATION_CAP_MS -
+                    currentActual,
+                ),
+              ),
+            ),
+          ],
+        ];
+      }),
+    );
     const fieldStints = Object.fromEntries(
       availableIds.map((id) => [
         id,
@@ -206,6 +262,15 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
         ),
       ]),
     ) as Record<PlayerId, number>;
+    const latestPlanningEvent = [...events]
+      .reverse()
+      .find((event) =>
+        [
+          "SUBSTITUTION_CONFIRMED",
+          "PLAYER_AVAILABILITY_CHANGED",
+          "LINEUP_SYNCHRONIZED",
+        ].includes(event.type),
+      );
     return planRecommendation({
       nowElapsedMs: planningElapsedMs,
       plannedEndElapsedMs: match.plannedDurationMs,
@@ -213,7 +278,8 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
       orderedAvailablePlayerIds: availableIds,
       currentLineupIds: planningProjection.currentLineupIds,
       balancesMsByPlayer: balances,
-      matchOnlyPlayerIds: bundle.players
+      maximumFutureActualMsByPlayer,
+      matchOnlyPlayerIds: players
         .filter(
           (player) =>
             player.membership === "guest" &&
@@ -231,14 +297,19 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
       ),
       actualMsByPlayer: planningProjection.actualMsByPlayer,
       idealMsByPlayer: planningProjection.idealMsByPlayer,
+      manualDeviation:
+        latestPlanningEvent?.type === "SUBSTITUTION_CONFIRMED" &&
+        latestPlanningEvent.source === "user",
+      availabilityChanged: latestPlanningEvent?.type === "PLAYER_AVAILABILITY_CHANGED",
     });
   }, [
-    bundle.players,
+    players,
     bundle.tournament.fairnessScope,
     match,
     planningElapsedMs,
     planningProjection,
     priorTotals,
+    events,
   ]);
 
   useEffect(() => wakeLock.subscribe(setWakeStatus), [wakeLock]);
@@ -361,6 +432,8 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
     lineupAfter: readonly string[],
     planningAt: number,
     keepJournal = true,
+    playerUpdates: readonly PlayerRecord[] = [],
+    pauseRemovals: readonly ParticipationPauseRemoval[] = [],
   ): Promise<boolean> => {
     if (actionInFlightRef.current) return false;
     actionInFlightRef.current = true;
@@ -373,7 +446,13 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
       const journal = keepJournal
         ? makeJournal(lineupAfter, lastSequence, nextMatch.plannedDurationMs)
         : undefined;
-      await repository.commitMatchAction(eventList, nextMatch, journal);
+      await repository.commitMatchAction(
+        eventList,
+        nextMatch,
+        journal,
+        playerUpdates,
+        pauseRemovals,
+      );
       setEvents((current) => [...current, ...eventList]);
       setMatch(nextMatch);
       setElapsedMs(planningAt);
@@ -451,9 +530,68 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
       },
     };
     const manualEvents: MatchEventRecord[] = [substitution];
-    if (manualHoldOut) {
+    const playerUpdates: PlayerRecord[] = [];
+    if (manualPauseScope !== "none") {
+      const outgoingPlayer = players.find((player) => player.id === manualOutgoing);
+      if (!outgoingPlayer) {
+        setError("Spilleren finnes ikke lenger i troppen.");
+        return;
+      }
+      const pauseId = crypto.randomUUID();
+      const pausedMatchIds = participationPauseMatchIds(
+        bundle.matches,
+        match,
+        manualPauseScope,
+      );
+      const participationPause = {
+        id: pauseId,
+        originMatchId: match.id,
+        scope: manualPauseScope,
+        matchIds: pausedMatchIds,
+        balanceTreatment: manualBalanceTreatment,
+        availabilityActive: true,
+        compensationActive:
+          outgoingPlayer.membership === "team" && manualBalanceTreatment === "preserve",
+      } as const;
+      const updatedPlayer: PlayerRecord = {
+        ...outgoingPlayer,
+        participationPauses: [
+          ...outgoingPlayer.participationPauses,
+          participationPause,
+        ],
+        unavailableMatchIds: [
+          ...new Set([
+            ...outgoingPlayer.explicitUnavailableMatchIds,
+            ...outgoingPlayer.participationPauses.flatMap((pause) => pause.matchIds),
+            ...pausedMatchIds,
+          ]),
+        ],
+      };
+      let fairnessAdjustmentId: string | undefined;
+      if (outgoingPlayer.membership === "team" && manualBalanceTreatment === "waive") {
+        const id = playerId(outgoingPlayer.id);
+        const effectiveBalance =
+          (priorTotals[outgoingPlayer.id]?.balanceMs ?? 0) +
+          (currentProjection.fairnessBalanceMsByPlayer[id] ?? 0) +
+          fairnessAdjustmentForMatch(outgoingPlayer, match.id, actionElapsed);
+        const adjustmentAmount = -Math.round(effectiveBalance);
+        if (adjustmentAmount !== 0) {
+          fairnessAdjustmentId = crypto.randomUUID();
+          updatedPlayer.fairnessAdjustments = [
+            ...updatedPlayer.fairnessAdjustments,
+            {
+              id: fairnessAdjustmentId,
+              matchId: match.id,
+              elapsedMs: actionElapsed,
+              amountMs: adjustmentAmount,
+              recordedAtWallMs: browserClockSource.wallNowMs(),
+              reason: "Eksisterende avvik frafalt ved deltakelsespause",
+            },
+          ];
+        }
+      }
       manualEvents.push({
-        id: crypto.randomUUID(),
+        id: pauseId,
         matchId: match.id,
         sequence: sequence + 1,
         type: "PLAYER_AVAILABILITY_CHANGED",
@@ -465,15 +603,29 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
           playerId: manualOutgoing,
           previousAvailable: true,
           available: false,
-          reason: "Holdt ute etter manuelt bytte",
+          reason: "Deltakelsespause etter manuelt bytte",
+          pauseScope: manualPauseScope,
+          balanceTreatment: manualBalanceTreatment,
+          previousUnavailableMatchIds: outgoingPlayer.unavailableMatchIds,
+          pausedMatchIds,
+          participationPauseId: pauseId,
+          ...(fairnessAdjustmentId ? { fairnessAdjustmentId } : {}),
         },
       });
+      playerUpdates.push(updatedPlayer);
     }
-    if (await commit(manualEvents, match, lineupAfter, actionElapsed)) {
+    if (
+      await commit(manualEvents, match, lineupAfter, actionElapsed, true, playerUpdates)
+    ) {
+      if (playerUpdates.length > 0) {
+        const byId = new Map(playerUpdates.map((player) => [player.id, player]));
+        setPlayers((current) => current.map((player) => byId.get(player.id) ?? player));
+      }
       setManualOpen(false);
       setManualIncoming(undefined);
       setManualOutgoing(undefined);
-      setManualHoldOut(false);
+      setManualPauseScope("none");
+      setManualBalanceTreatment("preserve");
     }
   };
 
@@ -701,6 +853,51 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
     ) {
       targets.unshift(previous);
     }
+    const playerUpdates: PlayerRecord[] = [];
+    const pauseRemovals: Array<{
+      playerId: string;
+      participationPauseId: string;
+      fairnessAdjustmentId?: string;
+    }> = [];
+    if (
+      target.type === "PLAYER_AVAILABILITY_CHANGED" &&
+      target.payload.pauseScope &&
+      target.payload.participationPauseId
+    ) {
+      const player = players.find(
+        (candidate) => candidate.id === target.payload.playerId,
+      );
+      if (player) {
+        const participationPauses = player.participationPauses.filter(
+          (pause) => pause.id !== target.payload.participationPauseId,
+        );
+        const restoredPlayer: PlayerRecord = {
+          ...player,
+          participationPauses,
+          unavailableMatchIds: [
+            ...new Set([
+              ...player.explicitUnavailableMatchIds,
+              ...participationPauses.flatMap((pause) => pause.matchIds),
+            ]),
+          ],
+          fairnessAdjustments: target.payload.fairnessAdjustmentId
+            ? player.fairnessAdjustments.filter(
+                (adjustment) => adjustment.id !== target.payload.fairnessAdjustmentId,
+              )
+            : player.fairnessAdjustments,
+        };
+        playerUpdates.push(restoredPlayer);
+        pauseRemovals.push({
+          playerId: player.id,
+          participationPauseId: target.payload.participationPauseId,
+          ...(target.payload.fairnessAdjustmentId
+            ? {
+                fairnessAdjustmentId: target.payload.fairnessAdjustmentId,
+              }
+            : {}),
+        });
+      }
+    }
     const actionElapsed = clockRef.current.elapsedMs();
     const sequence = nextSequence();
     const corrections: MatchEventRecord[] = targets.map((event, index) => ({
@@ -725,8 +922,15 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
         match,
         correctedProjection.currentLineupIds,
         actionElapsed,
+        true,
+        [],
+        pauseRemovals,
       )
     ) {
+      if (playerUpdates.length > 0) {
+        const byId = new Map(playerUpdates.map((player) => [player.id, player]));
+        setPlayers((current) => current.map((player) => byId.get(player.id) ?? player));
+      }
       setToolsOpen(false);
     }
   };
@@ -792,7 +996,7 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
     dueDelta !== undefined && dueDelta > 0 && dueDelta <= match.alertLeadMs;
   const firstSwap = recommendation?.swaps[0];
   const projectedRows = recommendation
-    ? bundle.players
+    ? players
         .filter((player) => match.eligiblePlayerIds.includes(player.id))
         .map((player) => {
           const id = playerId(player.id);
@@ -832,10 +1036,10 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
   const hasProjectedDifference = projectedDifferences.some(
     (difference) => Math.abs(difference) >= 500,
   );
-  const fieldPlayers = bundle.players.filter((player) =>
+  const fieldPlayers = players.filter((player) =>
     projection.currentLineupIds.includes(playerId(player.id)),
   );
-  const benchPlayers = bundle.players.filter(
+  const benchPlayers = players.filter(
     (player) =>
       projection.currentlyAvailableIds.includes(playerId(player.id)) &&
       !projection.currentLineupIds.includes(playerId(player.id)),
@@ -843,7 +1047,8 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
   const openManual = (outgoing?: string) => {
     setManualOutgoing(outgoing);
     setManualIncoming(benchPlayers.length === 1 ? benchPlayers[0]?.id : undefined);
-    setManualHoldOut(false);
+    setManualPauseScope("none");
+    setManualBalanceTreatment("preserve");
     setManualOpen(true);
   };
 
@@ -916,13 +1121,13 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
             <div className="swap-names">
               <strong>
                 {recommendation.swaps
-                  .map((swap) => playerName(bundle.players, swap.incomingPlayerId))
+                  .map((swap) => playerName(players, swap.incomingPlayerId))
                   .join(" + ")}{" "}
                 <span>INN</span>
               </strong>
               <strong>
                 {recommendation.swaps
-                  .map((swap) => playerName(bundle.players, swap.outgoingPlayerId))
+                  .map((swap) => playerName(players, swap.outgoingPlayerId))
                   .join(" + ")}{" "}
                 <span>UT</span>
               </strong>
@@ -1066,16 +1271,19 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
           outgoing={manualOutgoing}
           incoming={manualIncoming}
           elapsedMs={elapsedMs}
-          holdOut={manualHoldOut}
+          pauseScope={manualPauseScope}
+          balanceTreatment={manualBalanceTreatment}
           onOutgoing={setManualOutgoing}
           onIncoming={setManualIncoming}
-          onHoldOut={setManualHoldOut}
+          onPauseScope={setManualPauseScope}
+          onBalanceTreatment={setManualBalanceTreatment}
           onConfirm={() => void confirmManual()}
           onCancel={() => {
             setManualOpen(false);
             setManualOutgoing(undefined);
             setManualIncoming(undefined);
-            setManualHoldOut(false);
+            setManualPauseScope("none");
+            setManualBalanceTreatment("preserve");
           }}
         />
       )}
@@ -1093,6 +1301,12 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
               Basert på planen akkurat nå. Forskjeller innen ±00:30 trenger ikke et
               ekstra kort bytte.
             </p>
+            {!recommendation?.diagnostics.futureAllocationCaps.capsFeasible && (
+              <p className="notice">
+                For få tilgjengelige spillere gjør at en planlagt belastningsgrense må
+                overskrides for å fylle banen.
+              </p>
+            )}
             <ul className="list projection-list">
               {projectedRows.map((player) => (
                 <li className="list-row" key={player.id}>
@@ -1152,7 +1366,7 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
               <div>
                 <h3>Tilgjengelighet</h3>
                 <div className="availability-actions">
-                  {bundle.players
+                  {players
                     .filter((player) => match.eligiblePlayerIds.includes(player.id))
                     .map((player) => (
                       <button
@@ -1208,8 +1422,8 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
           >
             <h2 id="availability-title">Bytt før spilleren blir utilgjengelig</h2>
             <p>
-              {playerName(bundle.players, availabilityAction.incomingId)} går inn for{" "}
-              {playerName(bundle.players, availabilityAction.playerId)}.
+              {playerName(players, availabilityAction.incomingId)} går inn for{" "}
+              {playerName(players, availabilityAction.playerId)}.
             </p>
             <div className="dialog__actions">
               <Button
@@ -1313,10 +1527,12 @@ function ManualDialog({
   outgoing,
   incoming,
   elapsedMs,
-  holdOut,
+  pauseScope,
+  balanceTreatment,
   onOutgoing,
   onIncoming,
-  onHoldOut,
+  onPauseScope,
+  onBalanceTreatment,
   onConfirm,
   onCancel,
 }: {
@@ -1325,13 +1541,16 @@ function ManualDialog({
   outgoing: string | undefined;
   incoming: string | undefined;
   elapsedMs: number;
-  holdOut: boolean;
+  pauseScope: ParticipationPauseScope;
+  balanceTreatment: BalanceTreatment;
   onOutgoing: (id: string) => void;
   onIncoming: (id: string) => void;
-  onHoldOut: (holdOut: boolean) => void;
+  onPauseScope: (scope: ParticipationPauseScope) => void;
+  onBalanceTreatment: (treatment: BalanceTreatment) => void;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  const outgoingPlayer = fieldPlayers.find((player) => player.id === outgoing);
   return (
     <div className="dialog-backdrop" role="presentation">
       <section
@@ -1377,19 +1596,56 @@ function ManualDialog({
           </div>
         )}
         {outgoing && (
-          <label className="toggle-row manual-hold-out">
-            <span>
-              <strong>Hold spilleren ute</strong>
-              <small>
-                Fjernes fra planen til du markerer spilleren tilgjengelig igjen.
-              </small>
-            </span>
-            <input
-              type="checkbox"
-              checked={holdOut}
-              onChange={(event) => onHoldOut(event.currentTarget.checked)}
-            />
-          </label>
+          <div className="injury-options">
+            <label className="toggle-row manual-hold-out">
+              <span>
+                <strong>Skadet / trenger pause</strong>
+                <small>Spilleren får ikke nytt mål mens pausen varer.</small>
+              </span>
+              <input
+                type="checkbox"
+                checked={pauseScope !== "none"}
+                onChange={(event) =>
+                  onPauseScope(event.currentTarget.checked ? "current" : "none")
+                }
+              />
+            </label>
+            {pauseScope !== "none" && (
+              <div className="form-grid injury-options__details">
+                <label className="field">
+                  <span className="field__label">Hvor lenge?</span>
+                  <select
+                    value={pauseScope}
+                    onChange={(event) =>
+                      onPauseScope(event.currentTarget.value as ParticipationPauseScope)
+                    }
+                  >
+                    <option value="current">Resten av denne kampen</option>
+                    <option value="through-next">Denne kampen + neste kamp</option>
+                    <option value="rest-day">Resten av spilldagen</option>
+                  </select>
+                </label>
+                {outgoingPlayer?.membership === "team" && (
+                  <label className="field">
+                    <span className="field__label">Eksisterende avvik</span>
+                    <select
+                      value={balanceTreatment}
+                      onChange={(event) =>
+                        onBalanceTreatment(
+                          event.currentTarget.value as BalanceTreatment,
+                        )
+                      }
+                    >
+                      <option value="preserve">
+                        Behold · ta igjen gradvis, maks +1 min per kamp
+                      </option>
+                      <option value="waive">Frafall · start videre fra null</option>
+                    </select>
+                  </label>
+                )}
+              </div>
+            )}
+          </div>
         )}
         <div className="dialog__actions">
           <Button

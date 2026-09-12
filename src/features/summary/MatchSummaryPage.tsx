@@ -13,6 +13,7 @@ import { exportBackup } from "../../storage/backup";
 import type { MatchEventRecord } from "../../storage/schema";
 import {
   calculateTournamentTotals,
+  fairnessAdjustmentForMatch,
   loadMatchData,
   playerName,
   projectStoredMatch,
@@ -93,23 +94,54 @@ export function MatchSummaryPage({ matchId }: { matchId: string }) {
       setMessage("Det finnes ingen bytter å rette.");
       return;
     }
+    const pairedPause = events.find(
+      (
+        event,
+      ): event is Extract<MatchEventRecord, { type: "PLAYER_AVAILABILITY_CHANGED" }> =>
+        event.type === "PLAYER_AVAILABILITY_CHANGED" &&
+        !voidedIds.has(event.id) &&
+        event.sequence === target.sequence + 1 &&
+        event.elapsedMs === target.elapsedMs &&
+        event.payload.pauseScope !== undefined,
+    );
     setWorking(true);
-    const correction: MatchEventRecord = {
+    const correctionSequence = (events.at(-1)?.sequence ?? -1) + 1;
+    const correctionTargets = pairedPause ? [target, pairedPause] : [target];
+    const corrections: MatchEventRecord[] = correctionTargets.map((event, index) => ({
       id: crypto.randomUUID(),
       matchId: match.id,
-      sequence: (events.at(-1)?.sequence ?? -1) + 1,
+      sequence: correctionSequence + index,
       type: "EVENT_VOIDED",
       elapsedMs: projection.elapsedMs,
       recordedAtWallMs: Date.now(),
       source: "user",
       schemaVersion: 1,
       payload: {
-        targetEventId: target.id,
+        targetEventId: event.id,
         reason: "Korrigert fra kampoppsummeringen",
       },
-    };
+    }));
+    const pauseRemovals = pairedPause?.payload.participationPauseId
+      ? [
+          {
+            playerId: pairedPause.payload.playerId,
+            participationPauseId: pairedPause.payload.participationPauseId,
+            ...(pairedPause.payload.fairnessAdjustmentId
+              ? {
+                  fairnessAdjustmentId: pairedPause.payload.fairnessAdjustmentId,
+                }
+              : {}),
+          },
+        ]
+      : [];
     try {
-      await repository.commitMatchAction(correction, match, undefined);
+      await repository.commitMatchAction(
+        corrections,
+        match,
+        undefined,
+        [],
+        pauseRemovals,
+      );
       setMessage("Siste bytte er markert som angret i hendelsesloggen.");
       state.reload();
     } catch (caught) {
@@ -154,6 +186,11 @@ export function MatchSummaryPage({ matchId }: { matchId: string }) {
               const actual = projection.actualMsByPlayer[id] ?? 0;
               const ideal = projection.idealMsByPlayer[id] ?? 0;
               const balance = actual - ideal;
+              const currentAdjustment = fairnessAdjustmentForMatch(
+                player,
+                match.id,
+                projection.elapsedMs,
+              );
               const stints = projection.playingStintsByPlayer[id] ?? [];
               const bench = projection.benchStintsByPlayer[id] ?? [];
               const longestBench = Math.max(
@@ -185,7 +222,9 @@ export function MatchSummaryPage({ matchId }: { matchId: string }) {
                       {formatDuration((priorTotals[player.id]?.actualMs ?? 0) + actual)}{" "}
                       · avvik{" "}
                       {formatSignedDuration(
-                        (priorTotals[player.id]?.balanceMs ?? 0) + balance,
+                        (priorTotals[player.id]?.balanceMs ?? 0) +
+                          balance +
+                          currentAdjustment,
                       )}
                     </small>
                   ) : (
@@ -271,7 +310,16 @@ function eventDescription(
     case "SUBSTITUTION_CONFIRMED":
       return `${event.payload.incomingPlayerIds.map((id) => playerName(players, id)).join(", ")} inn · ${event.payload.outgoingPlayerIds.map((id) => playerName(players, id)).join(", ")} ut`;
     case "PLAYER_AVAILABILITY_CHANGED":
-      return `${playerName(players, event.payload.playerId)} ${event.payload.available ? "tilgjengelig" : "ikke tilgjengelig"}`;
+      if (event.payload.available) {
+        return `${playerName(players, event.payload.playerId)} tilgjengelig`;
+      }
+      return `${playerName(players, event.payload.playerId)} ${
+        event.payload.pauseScope === "through-next"
+          ? "pause gjennom neste kamp"
+          : event.payload.pauseScope === "rest-day"
+            ? "pause resten av spilldagen"
+            : "ikke tilgjengelig resten av kampen"
+      }`;
     case "LINEUP_SYNCHRONIZED":
       return "Lagoppstilling korrigert";
     case "MATCH_DURATION_CHANGED":

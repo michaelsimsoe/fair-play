@@ -1,9 +1,19 @@
-import { allocateBoundedCapacity, allocateRemaining } from "./allocator";
+import {
+  allocateBoundedCapacity,
+  allocateCappedCapacity,
+  allocateRemaining,
+  type CappedAllocation,
+} from "./allocator";
 import type { PlayerId } from "./ids";
-import type { Recommendation, RecommendationReason } from "./types";
+import type {
+  FutureAllocationCapDiagnostics,
+  Recommendation,
+  RecommendationReason,
+} from "./types";
 
 export const DEFAULT_COMPENSATION_TOLERANCE_MS = 30_000;
 export const DEFAULT_MINIMUM_BENCH_REST_MS = 60_000;
+export const DEFAULT_RETURN_COMPENSATION_CAP_MS = 60_000;
 
 export type PlannerInput = Readonly<{
   nowElapsedMs: number;
@@ -12,6 +22,13 @@ export type PlannerInput = Readonly<{
   orderedAvailablePlayerIds: readonly PlayerId[];
   currentLineupIds: readonly PlayerId[];
   balancesMsByPlayer: Readonly<Record<PlayerId, number>>;
+  /**
+   * Per-player ceiling for future actual field time in this plan. A returning
+   * team player's caller can use `max(0, matchTargetMs + 60_000 - actualMs)`.
+   * When all ceilings cannot fill the field, the plan records only the
+   * unavoidable deterministic relaxations.
+   */
+  maximumFutureActualMsByPlayer?: Readonly<Partial<Record<PlayerId, number>>>;
   /**
    * Players whose fairness is confined to this match. Their values in
    * `balancesMsByPlayer` are ignored so they cannot consume or provide
@@ -53,6 +70,9 @@ export type PlannerPreviewStep = Readonly<{
 export type PlannerResult = Readonly<{
   recommendation?: Recommendation;
   preview: readonly PlannerPreviewStep[];
+  diagnostics: Readonly<{
+    futureAllocationCaps: FutureAllocationCapDiagnostics;
+  }>;
 }>;
 
 const range = (values: readonly number[]) =>
@@ -117,6 +137,7 @@ type Simulation = {
   balances: Record<PlayerId, number>;
   currentMatchBalances: Record<PlayerId, number>;
   currentMatchActual: Record<PlayerId, number>;
+  futureAllocatedMs: Record<PlayerId, number>;
   fieldStints: Record<PlayerId, number>;
   benchStints: Record<PlayerId, number>;
   steps: PlannerPreviewStep[];
@@ -173,6 +194,54 @@ function matchOnlyIds(
   return new Set(input.matchOnlyPlayerIds?.filter((id) => ids.includes(id)) ?? []);
 }
 
+function futureMaximums(
+  input: PlannerInput,
+  ids: readonly PlayerId[],
+  remainingMs: number,
+  alreadyAllocatedMs: Readonly<Record<PlayerId, number>> = {},
+): Record<PlayerId, number> {
+  return Object.fromEntries(
+    ids.map((id) => {
+      const requested = input.maximumFutureActualMsByPlayer?.[id];
+      if (requested !== undefined && (!Number.isInteger(requested) || requested < 0))
+        throw new RangeError(
+          `Future allocation cap for ${String(id)} must be a non-negative integer.`,
+        );
+      return [
+        id,
+        requested === undefined
+          ? remainingMs
+          : Math.min(
+              Math.max(0, requested - amount(alreadyAllocatedMs, id)),
+              remainingMs,
+            ),
+      ];
+    }),
+  );
+}
+
+function capDiagnostics(
+  allocation: CappedAllocation,
+  requestedMaximums: Readonly<Record<PlayerId, number>>,
+  requiredCapacityMs: number,
+): FutureAllocationCapDiagnostics {
+  return {
+    capsFeasible: allocation.capsFeasible,
+    requestedCapacityMs: Object.values(requestedMaximums).reduce(
+      (total, value) => total + value,
+      0,
+    ),
+    requiredCapacityMs,
+    allocatedFutureActualMsByPlayer: allocation.allocationMsByPlayer,
+    relaxations: allocation.capRelaxations.map((relaxation) => ({
+      playerId: relaxation.playerId,
+      maximumFutureActualMs: relaxation.maximumMs,
+      allocatedFutureActualMs: relaxation.allocatedMs,
+      relaxedByMs: relaxation.exceededMs,
+    })),
+  };
+}
+
 function allocateGuestTargets(
   guestIds: readonly PlayerId[],
   currentMatchBalances: Readonly<Record<PlayerId, number>>,
@@ -180,6 +249,7 @@ function allocateGuestTargets(
   futureIdealMs: number,
   minimumCapacity: number,
   maximumCapacity: number,
+  maximums?: Readonly<Record<PlayerId, number>>,
 ): Record<PlayerId, number> {
   const desired = guestIds.map((id) =>
     Math.max(
@@ -187,22 +257,31 @@ function allocateGuestTargets(
       Math.min(remainingMs, futureIdealMs - amount(currentMatchBalances, id)),
     ),
   );
-  const allocation = Object.fromEntries(
-    guestIds.map((id, index) => [id, Math.round(desired[index]!)]),
-  ) as Record<PlayerId, number>;
-  const total = Object.values(allocation).reduce((sum, value) => sum + value, 0);
-  if (total >= minimumCapacity && total <= maximumCapacity) return allocation;
-
+  const desiredCapacity = desired.reduce((sum, value) => sum + Math.round(value), 0);
+  if (!maximums) {
+    const allocation = Object.fromEntries(
+      guestIds.map((id, index) => [id, Math.round(desired[index]!)]),
+    ) as Record<PlayerId, number>;
+    if (desiredCapacity >= minimumCapacity && desiredCapacity <= maximumCapacity)
+      return allocation;
+    return allocateBoundedCapacity(
+      Object.fromEntries(guestIds.map((id, index) => [id, -desired[index]!])),
+      Math.max(minimumCapacity, Math.min(maximumCapacity, desiredCapacity)),
+      remainingMs,
+      guestIds,
+    );
+  }
   const constrainedCapacity = Math.max(
     minimumCapacity,
-    Math.min(maximumCapacity, total),
+    Math.min(maximumCapacity, desiredCapacity),
   );
-  return allocateBoundedCapacity(
+  return allocateCappedCapacity(
     Object.fromEntries(guestIds.map((id, index) => [id, -desired[index]!])),
     constrainedCapacity,
+    maximums,
     remainingMs,
     guestIds,
-  );
+  ).allocationMsByPlayer;
 }
 
 function allocateFuture(
@@ -212,32 +291,95 @@ function allocateFuture(
   remainingMs: number,
   ids: readonly PlayerId[],
   matchOnly: ReadonlySet<PlayerId>,
-): Record<PlayerId, number> {
-  if (matchOnly.size === 0)
-    return allocateRemaining(balances, remainingMs, input.fieldSlots, ids);
+  alreadyAllocatedMs: Readonly<Record<PlayerId, number>> = {},
+): CappedAllocation {
+  const capacity = remainingMs * input.fieldSlots;
+  const hasExplicitCaps = input.maximumFutureActualMsByPlayer !== undefined;
+  if (!hasExplicitCaps) {
+    if (matchOnly.size === 0) {
+      return {
+        allocationMsByPlayer: allocateRemaining(
+          balances,
+          remainingMs,
+          input.fieldSlots,
+          ids,
+        ),
+        capsFeasible: true,
+        capRelaxations: [],
+      };
+    }
+    const guestIds = ids.filter((id) => matchOnly.has(id));
+    const teamIds = ids.filter((id) => !matchOnly.has(id));
+    const guestAllocation = allocateGuestTargets(
+      guestIds,
+      currentMatchBalances,
+      remainingMs,
+      capacity / ids.length,
+      Math.max(0, capacity - teamIds.length * remainingMs),
+      Math.min(capacity, guestIds.length * remainingMs),
+    );
+    const teamCapacity =
+      capacity - Object.values(guestAllocation).reduce((sum, value) => sum + value, 0);
+    const teamAllocation = allocateBoundedCapacity(
+      balances,
+      teamCapacity,
+      remainingMs,
+      teamIds,
+    );
+    return {
+      allocationMsByPlayer: Object.fromEntries(
+        ids.map((id) => [id, guestAllocation[id] ?? teamAllocation[id] ?? 0]),
+      ),
+      capsFeasible: true,
+      capRelaxations: [],
+    };
+  }
+  const maximums = futureMaximums(input, ids, remainingMs, alreadyAllocatedMs);
+  const capBalances = Object.fromEntries(
+    ids.map((id) => [
+      id,
+      matchOnly.has(id) ? amount(currentMatchBalances, id) : amount(balances, id),
+    ]),
+  ) as Record<PlayerId, number>;
+  const totalMaximum = Object.values(maximums).reduce(
+    (sum, maximum) => sum + maximum,
+    0,
+  );
+  if (totalMaximum < capacity)
+    return allocateCappedCapacity(capBalances, capacity, maximums, remainingMs, ids);
+  if (matchOnly.size === 0) {
+    return allocateCappedCapacity(balances, capacity, maximums, remainingMs, ids);
+  }
   const guestIds = ids.filter((id) => matchOnly.has(id));
   const teamIds = ids.filter((id) => !matchOnly.has(id));
-  const capacity = remainingMs * input.fieldSlots;
   const futureIdeal = capacity / ids.length;
+  const teamMaximum = teamIds.reduce((sum, id) => sum + maximums[id]!, 0);
+  const guestMaximum = guestIds.reduce((sum, id) => sum + maximums[id]!, 0);
   const guestAllocation = allocateGuestTargets(
     guestIds,
     currentMatchBalances,
     remainingMs,
     futureIdeal,
-    Math.max(0, capacity - teamIds.length * remainingMs),
-    Math.min(capacity, guestIds.length * remainingMs),
+    Math.max(0, capacity - teamMaximum),
+    Math.min(capacity, guestMaximum),
+    maximums,
   );
   const teamCapacity =
     capacity - Object.values(guestAllocation).reduce((sum, value) => sum + value, 0);
-  const teamAllocation = allocateBoundedCapacity(
+  const teamAllocation = allocateCappedCapacity(
     balances,
     teamCapacity,
+    maximums,
     remainingMs,
     teamIds,
-  );
-  return Object.fromEntries(
-    ids.map((id) => [id, guestAllocation[id] ?? teamAllocation[id] ?? 0]),
-  );
+  ).allocationMsByPlayer;
+  return {
+    allocationMsByPlayer: Object.fromEntries(
+      ids.map((id) => [id, guestAllocation[id] ?? teamAllocation[id] ?? 0]),
+    ),
+    capsFeasible: true,
+    capRelaxations: [],
+  };
 }
 
 function unchangedLineupWithinTolerance(
@@ -276,7 +418,8 @@ function nextStep(
     remaining,
     ids,
     matchOnly,
-  );
+    simulation.futureAllocatedMs,
+  ).allocationMsByPlayer;
   const preferred = Math.max(
     0,
     Math.min(
@@ -408,6 +551,8 @@ function advanceSimulation(
         amount(simulation.currentMatchBalances, id) + delay - idealIncrement;
       simulation.currentMatchActual[id] =
         amount(simulation.currentMatchActual, id) + delay;
+      simulation.futureAllocatedMs[id] =
+        amount(simulation.futureAllocatedMs, id) + delay;
       simulation.fieldStints[id] = amount(simulation.fieldStints, id) + delay;
       simulation.benchStints[id] = 0;
     } else {
@@ -436,7 +581,18 @@ export function planMatch(input: PlannerInput): PlannerResult {
     input.fieldSlots > ids.length ||
     new Set(ids).size !== ids.length
   )
-    return { preview: [] };
+    return {
+      preview: [],
+      diagnostics: {
+        futureAllocationCaps: {
+          capsFeasible: true,
+          requestedCapacityMs: 0,
+          requiredCapacityMs: 0,
+          allocatedFutureActualMsByPlayer: {},
+          relaxations: [],
+        },
+      },
+    };
 
   const initialBalances = Object.fromEntries(
     ids.map((id) => [
@@ -446,6 +602,19 @@ export function planMatch(input: PlannerInput): PlannerResult {
         : amount(input.balancesMsByPlayer, id),
     ]),
   ) as Record<PlayerId, number>;
+  const initialAllocation = allocateFuture(
+    input,
+    initialBalances,
+    currentMatch.balances,
+    remaining,
+    ids,
+    matchOnly,
+  );
+  const futureAllocationCaps = capDiagnostics(
+    initialAllocation,
+    futureMaximums(input, ids, remaining),
+    remaining * input.fieldSlots,
+  );
   const simulation: Simulation = {
     now: input.nowElapsedMs,
     end: input.plannedEndElapsedMs,
@@ -453,6 +622,7 @@ export function planMatch(input: PlannerInput): PlannerResult {
     balances: copyTotals(ids, initialBalances),
     currentMatchBalances: copyTotals(ids, currentMatch.balances),
     currentMatchActual: copyTotals(ids, currentMatch.actual),
+    futureAllocatedMs: copyTotals(ids, {}),
     fieldStints: copyTotals(ids, input.currentFieldStintMsByPlayer),
     benchStints: copyTotals(ids, input.currentBenchStintMsByPlayer),
     steps: [],
@@ -468,16 +638,9 @@ export function planMatch(input: PlannerInput): PlannerResult {
     if (simulation.now === previousNow) break;
   }
   const first = simulation.steps[0];
-  if (!first) return { preview: [] };
+  if (!first) return { preview: [], diagnostics: { futureAllocationCaps } };
 
-  const allocation = allocateFuture(
-    input,
-    initialBalances,
-    currentMatch.balances,
-    remaining,
-    ids,
-    matchOnly,
-  );
+  const allocation = initialAllocation.allocationMsByPlayer;
   const futureIdeal = (remaining * input.fieldSlots) / ids.length;
   const projectedActual = Object.fromEntries(
     ids.map((id) => [id, amount(currentMatch.actual, id) + amount(allocation, id)]),
@@ -539,9 +702,14 @@ export function planMatch(input: PlannerInput): PlannerResult {
       maximumAbsoluteCurrentMatchDifferenceMs,
       expectedSubstitutionCount: simulation.steps.length,
       shortStintWarnings,
+      futureAllocationCaps,
     },
   };
-  return { recommendation, preview: simulation.steps };
+  return {
+    recommendation,
+    preview: simulation.steps,
+    diagnostics: { futureAllocationCaps },
+  };
 }
 
 export const planRecommendation = (input: PlannerInput): Recommendation | undefined =>

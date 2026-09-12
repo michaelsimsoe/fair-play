@@ -5,6 +5,7 @@ import {
   backupEnvelopeSchema,
   defaultSettings,
   legacyBackupEnvelopeSchema,
+  legacyV2BackupEnvelopeSchema,
   normalizePlayerName,
   seedEnvelopeSchema,
   type BackupEnvelope,
@@ -14,7 +15,7 @@ import {
   type TournamentRecord,
 } from "./schema";
 
-const APP_VERSION = "1.1.0";
+const APP_VERSION = "1.2.0";
 
 export class ImportValidationError extends Error {
   constructor(
@@ -52,7 +53,7 @@ export async function exportBackup(
   ]);
   const envelope: BackupEnvelope = {
     format: "fairplay-sideline-backup",
-    schemaVersion: 2,
+    schemaVersion: 3,
     exportedAt: new Date().toISOString(),
     appVersion: APP_VERSION,
     data: {
@@ -79,29 +80,46 @@ export async function importBackup(
   if (currentResult.success) {
     validated = currentResult.data;
   } else {
-    const legacyResult = legacyBackupEnvelopeSchema.safeParse(parsed);
-    if (!legacyResult.success) {
-      throw new ImportValidationError(
-        "Sikkerhetskopien kunne ikke leses.",
-        formatZodIssues(currentResult.error),
-      );
+    const legacyV2Result = legacyV2BackupEnvelopeSchema.safeParse(parsed);
+    if (legacyV2Result.success) {
+      validated = {
+        ...legacyV2Result.data,
+        schemaVersion: 3,
+        data: {
+          ...legacyV2Result.data.data,
+          players: legacyV2Result.data.data.players.map((player) => ({
+            ...player,
+            explicitUnavailableMatchIds: [],
+            unavailableMatchIds: [],
+            participationPauses: [],
+            fairnessAdjustments: [],
+          })),
+        },
+      };
+    } else {
+      const legacyResult = legacyBackupEnvelopeSchema.safeParse(parsed);
+      if (!legacyResult.success) {
+        throw new ImportValidationError(
+          "Sikkerhetskopien kunne ikke leses.",
+          formatZodIssues(currentResult.error),
+        );
+      }
+      validated = {
+        ...legacyResult.data,
+        schemaVersion: 3,
+        data: {
+          ...legacyResult.data.data,
+          players: legacyResult.data.data.players.map((player) => ({
+            ...player,
+            membership: "team",
+            explicitUnavailableMatchIds: [],
+            unavailableMatchIds: [],
+            participationPauses: [],
+            fairnessAdjustments: [],
+          })),
+        },
+      };
     }
-    validated = {
-      format: legacyResult.data.format,
-      schemaVersion: 2,
-      exportedAt: legacyResult.data.exportedAt,
-      appVersion: legacyResult.data.appVersion,
-      data: {
-        tournaments: legacyResult.data.data.tournaments,
-        players: legacyResult.data.data.players.map((player) => ({
-          ...player,
-          membership: "team",
-        })),
-        matches: legacyResult.data.data.matches,
-        matchEvents: legacyResult.data.data.matchEvents,
-        appSettings: legacyResult.data.data.appSettings,
-      },
-    };
   }
 
   const data = mode === "copy" ? remapBackupAsCopy(validated) : validated;
@@ -192,6 +210,10 @@ function seedToRecords(seed: SeedEnvelope): {
     tournamentId,
     normalizedName: normalizePlayerName(player.name),
     membership: player.membership ?? "team",
+    explicitUnavailableMatchIds: [],
+    unavailableMatchIds: [],
+    participationPauses: [],
+    fairnessAdjustments: [],
     createdAtWallMs: now,
   }));
   const matches: MatchRecord[] = seed.matches.map((match, index) => ({

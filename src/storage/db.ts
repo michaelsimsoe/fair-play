@@ -74,6 +74,40 @@ export class FairPlayDatabase extends Dexie {
           });
       });
 
+    this.version(4)
+      .stores({
+        tournaments: "id, date, updatedAtWallMs",
+        players:
+          "id, tournamentId, [tournamentId+sortOrder], normalizedName, [tournamentId+membership]",
+        matches: "id, tournamentId, [tournamentId+order], status, updatedAtWallMs",
+        matchEvents: "id, matchId, [matchId+sequence]",
+        activeMatchJournals: "matchId, savedAtWallMs",
+        appSettings: "id",
+      })
+      .upgrade(async (transaction) => {
+        type LegacyPlayer = Omit<
+          PlayerRecord,
+          | "unavailableMatchIds"
+          | "explicitUnavailableMatchIds"
+          | "participationPauses"
+          | "fairnessAdjustments"
+        > & {
+          unavailableMatchIds?: string[];
+          explicitUnavailableMatchIds?: string[];
+          participationPauses?: PlayerRecord["participationPauses"];
+          fairnessAdjustments?: PlayerRecord["fairnessAdjustments"];
+        };
+        await transaction
+          .table<LegacyPlayer>("players")
+          .toCollection()
+          .modify((player) => {
+            player.unavailableMatchIds ??= [];
+            player.explicitUnavailableMatchIds ??= [...player.unavailableMatchIds];
+            player.participationPauses ??= [];
+            player.fairnessAdjustments ??= [];
+          });
+      });
+
     this.on("populate", () => {
       void this.appSettings.add(defaultSettings(Date.now()));
     });

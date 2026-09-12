@@ -1,6 +1,6 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { allocateRemaining } from "./allocator";
+import { allocateCappedCapacity, allocateRemaining } from "./allocator";
 import { type MatchEvent } from "./events";
 import { playerId, matchEventId, matchId } from "./ids";
 import { planMatch } from "./planner";
@@ -307,6 +307,137 @@ describe("allocator", () => {
     expect(
       Object.values(sixAllocations).reduce((total, value) => total + value, 0),
     ).toBe(2_160_000);
+  });
+
+  it("preserves feasible arbitrary per-player future caps", () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 2, max: 8 }),
+        fc.integer({ min: 1, max: 10_000 }),
+        fc.array(fc.integer({ min: -100_000, max: 100_000 }), {
+          minLength: 2,
+          maxLength: 8,
+        }),
+        fc.array(fc.integer({ min: 0, max: 10_000 }), {
+          minLength: 2,
+          maxLength: 8,
+        }),
+        (playerCount, remainingMs, balances, caps) => {
+          const ids = Array.from({ length: playerCount }, (_, index) =>
+            playerId(`capped-${index}`),
+          );
+          const fieldSlots = Math.max(1, Math.min(playerCount - 1, 3));
+          const capacity = fieldSlots * remainingMs;
+          const maximums = Object.fromEntries(
+            ids.map((id, index) => [
+              id,
+              Math.min(remainingMs, caps[index % caps.length]!),
+            ]),
+          ) as Record<(typeof ids)[number], number>;
+          fc.pre(
+            Object.values(maximums).reduce((sum, value) => sum + value, 0) >= capacity,
+          );
+          const result = allocateCappedCapacity(
+            Object.fromEntries(
+              ids.map((id, index) => [id, balances[index % balances.length]!]),
+            ),
+            capacity,
+            maximums,
+            remainingMs,
+            ids,
+          );
+          expect(result.capsFeasible).toBe(true);
+          expect(
+            Object.values(result.allocationMsByPlayer).reduce(
+              (sum, value) => sum + value,
+              0,
+            ),
+          ).toBe(capacity);
+          ids.forEach((id) =>
+            expect(result.allocationMsByPlayer[id]).toBeLessThanOrEqual(maximums[id]!),
+          );
+        },
+      ),
+      { numRuns: 200 },
+    );
+  });
+
+  it("relaxes infeasible caps by only the capacity shortfall", () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 2, max: 8 }),
+        fc.integer({ min: 1, max: 10_000 }),
+        fc.array(fc.integer({ min: -100_000, max: 100_000 }), {
+          minLength: 2,
+          maxLength: 8,
+        }),
+        fc.array(fc.integer({ min: 0, max: 10_000 }), {
+          minLength: 2,
+          maxLength: 8,
+        }),
+        (playerCount, remainingMs, balances, caps) => {
+          const ids = Array.from({ length: playerCount }, (_, index) =>
+            playerId(`relaxed-${index}`),
+          );
+          const fieldSlots = Math.max(1, Math.min(playerCount - 1, 3));
+          const capacity = fieldSlots * remainingMs;
+          const maximums = Object.fromEntries(
+            ids.map((id, index) => [
+              id,
+              Math.min(remainingMs, caps[index % caps.length]!),
+            ]),
+          ) as Record<(typeof ids)[number], number>;
+          const cappedCapacity = Object.values(maximums).reduce(
+            (sum, value) => sum + value,
+            0,
+          );
+          fc.pre(cappedCapacity < capacity);
+          const result = allocateCappedCapacity(
+            Object.fromEntries(
+              ids.map((id, index) => [id, balances[index % balances.length]!]),
+            ),
+            capacity,
+            maximums,
+            remainingMs,
+            ids,
+          );
+          expect(result.capsFeasible).toBe(false);
+          expect(
+            result.capRelaxations.reduce(
+              (sum, relaxation) => sum + relaxation.exceededMs,
+              0,
+            ),
+          ).toBe(capacity - cappedCapacity);
+          ids.forEach((id) =>
+            expect(result.allocationMsByPlayer[id]).toBeLessThanOrEqual(remainingMs),
+          );
+        },
+      ),
+      { numRuns: 200 },
+    );
+  });
+
+  it("gives unavoidable cap relaxation to the least-over-target players first", () => {
+    const ids = [
+      playerId("ahead"),
+      playerId("behind"),
+      playerId("even"),
+      playerId("capped"),
+    ];
+    const [ahead, behind, even, capped] = ids;
+    const result = allocateCappedCapacity(
+      { [ahead!]: 10_000, [behind!]: -10_000, [even!]: 0, [capped!]: 0 },
+      180_000,
+      { [ahead!]: 0, [behind!]: 0, [even!]: 0, [capped!]: 60_000 },
+      60_000,
+      ids,
+    );
+
+    expect(result.capRelaxations).toEqual([
+      { playerId: ahead, maximumMs: 0, allocatedMs: 30_000, exceededMs: 30_000 },
+      { playerId: behind, maximumMs: 0, allocatedMs: 50_000, exceededMs: 50_000 },
+      { playerId: even, maximumMs: 0, allocatedMs: 40_000, exceededMs: 40_000 },
+    ]);
   });
 });
 
@@ -1016,5 +1147,203 @@ describe("planner", () => {
 
     expect(result?.dueAtElapsedMs).toBe(0);
     expect(result?.swaps[0]?.incomingPlayerId).toBe(recentlyOutgoing);
+  });
+
+  it("limits a returning team player's large carried debt to one minute above target", () => {
+    const returning = ask;
+    const normalMatchTargetMs = 540_000;
+    const maximumFutureActualMs = normalMatchTargetMs + 60_000;
+    const plan = (balances: Record<(typeof players)[number], number>) =>
+      planMatch({
+        nowElapsedMs: 0,
+        plannedEndElapsedMs: 720_000,
+        fieldSlots: 3,
+        orderedAvailablePlayerIds: players,
+        currentLineupIds: [ali, fredrik, lucas],
+        balancesMsByPlayer: balances,
+        maximumFutureActualMsByPlayer: { [returning]: maximumFutureActualMs },
+        currentFieldStintMsByPlayer: { [ask]: 0, [ali]: 0, [fredrik]: 0, [lucas]: 0 },
+        currentBenchStintMsByPlayer: {
+          [ask]: 60_000,
+          [ali]: 0,
+          [fredrik]: 0,
+          [lucas]: 0,
+        },
+        minimumPreferredStintMs: 60_000,
+      });
+    const first = plan({
+      [ask]: -2_000_000,
+      [ali]: 666_667,
+      [fredrik]: 666_667,
+      [lucas]: 666_666,
+    });
+    expect(first.recommendation?.projectedActualMsByPlayer[returning]).toBe(
+      maximumFutureActualMs,
+    );
+    expect(first.recommendation?.diagnostics.futureAllocationCaps.capsFeasible).toBe(
+      true,
+    );
+
+    const second = plan(
+      first.recommendation?.projectedBalanceMsByPlayer as Record<
+        (typeof players)[number],
+        number
+      >,
+    );
+    expect(second.recommendation?.projectedActualMsByPlayer[returning]).toBe(
+      maximumFutureActualMs,
+    );
+  });
+
+  it("fills the field and reports deterministic cap relaxation with no bench", () => {
+    const onlyField = [ask, ali, fredrik];
+    const result = planMatch({
+      nowElapsedMs: 0,
+      plannedEndElapsedMs: 60_000,
+      fieldSlots: 3,
+      orderedAvailablePlayerIds: onlyField,
+      currentLineupIds: onlyField,
+      balancesMsByPlayer: { [ask]: 10_000, [ali]: -10_000, [fredrik]: 0 },
+      maximumFutureActualMsByPlayer: { [ask]: 0, [ali]: 0, [fredrik]: 0 },
+      currentFieldStintMsByPlayer: { [ask]: 0, [ali]: 0, [fredrik]: 0 },
+      currentBenchStintMsByPlayer: { [ask]: 0, [ali]: 0, [fredrik]: 0 },
+      minimumPreferredStintMs: 60_000,
+    });
+
+    expect(result.recommendation).toBeUndefined();
+    expect(result.diagnostics.futureAllocationCaps).toEqual({
+      capsFeasible: false,
+      requestedCapacityMs: 0,
+      requiredCapacityMs: 180_000,
+      allocatedFutureActualMsByPlayer: {
+        [ask]: 60_000,
+        [ali]: 60_000,
+        [fredrik]: 60_000,
+      },
+      relaxations: [
+        {
+          playerId: ask,
+          maximumFutureActualMs: 0,
+          allocatedFutureActualMs: 60_000,
+          relaxedByMs: 60_000,
+        },
+        {
+          playerId: ali,
+          maximumFutureActualMs: 0,
+          allocatedFutureActualMs: 60_000,
+          relaxedByMs: 60_000,
+        },
+        {
+          playerId: fredrik,
+          maximumFutureActualMs: 0,
+          allocatedFutureActualMs: 60_000,
+          relaxedByMs: 60_000,
+        },
+      ],
+    });
+  });
+
+  it("enforces feasible per-player caps across randomized planner inputs", () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 2, max: 8 }),
+        fc.integer({ min: 1, max: 20_000 }),
+        fc.array(fc.integer({ min: -100_000, max: 100_000 }), {
+          minLength: 2,
+          maxLength: 8,
+        }),
+        fc.array(fc.integer({ min: 0, max: 20_000 }), {
+          minLength: 2,
+          maxLength: 8,
+        }),
+        (playerCount, remainingMs, balances, rawCaps) => {
+          const ids = Array.from({ length: playerCount }, (_, index) =>
+            playerId(`planner-capped-${index}`),
+          );
+          const fieldSlots = Math.max(1, Math.min(playerCount - 1, 3));
+          const capacity = fieldSlots * remainingMs;
+          const maximums = ids.map((_, index) =>
+            Math.min(remainingMs, rawCaps[index % rawCaps.length]!),
+          );
+          let missingCapacity = Math.max(
+            0,
+            capacity - maximums.reduce((sum, maximum) => sum + maximum, 0),
+          );
+          for (
+            let index = 0;
+            index < maximums.length && missingCapacity > 0;
+            index += 1
+          ) {
+            const increase = Math.min(remainingMs - maximums[index]!, missingCapacity);
+            maximums[index] = maximums[index]! + increase;
+            missingCapacity -= increase;
+          }
+          const caps = Object.fromEntries(
+            ids.map((id, index) => [id, maximums[index]!]),
+          ) as Record<(typeof ids)[number], number>;
+          const result = planMatch({
+            nowElapsedMs: 0,
+            plannedEndElapsedMs: remainingMs,
+            fieldSlots,
+            orderedAvailablePlayerIds: ids,
+            currentLineupIds: ids.slice(0, fieldSlots),
+            balancesMsByPlayer: Object.fromEntries(
+              ids.map((id, index) => [id, balances[index % balances.length]!]),
+            ),
+            maximumFutureActualMsByPlayer: caps,
+            currentFieldStintMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+            currentBenchStintMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+            minimumPreferredStintMs: 1,
+          });
+          const diagnostics = result.diagnostics.futureAllocationCaps;
+          expect(diagnostics.capsFeasible).toBe(true);
+          expect(
+            Object.values(diagnostics.allocatedFutureActualMsByPlayer).reduce(
+              (sum, value) => sum + value,
+              0,
+            ),
+          ).toBe(capacity);
+          ids.forEach((id) =>
+            expect(diagnostics.allocatedFutureActualMsByPlayer[id]).toBeLessThanOrEqual(
+              caps[id]!,
+            ),
+          );
+        },
+      ),
+      { numRuns: 200 },
+    );
+  });
+
+  it("honors caps when replanning from a manually synchronized lineup", () => {
+    const result = planMatch({
+      nowElapsedMs: 240_000,
+      plannedEndElapsedMs: 720_000,
+      fieldSlots: 3,
+      orderedAvailablePlayerIds: players,
+      currentLineupIds: [ask, ali, lucas],
+      balancesMsByPlayer: { [ask]: 0, [ali]: 0, [fredrik]: 0, [lucas]: 0 },
+      maximumFutureActualMsByPlayer: { [lucas]: 0 },
+      currentFieldStintMsByPlayer: {
+        [ask]: 240_000,
+        [ali]: 240_000,
+        [fredrik]: 0,
+        [lucas]: 0,
+      },
+      currentBenchStintMsByPlayer: {
+        [ask]: 0,
+        [ali]: 0,
+        [fredrik]: 240_000,
+        [lucas]: 0,
+      },
+      minimumPreferredStintMs: 60_000,
+      manualDeviation: true,
+    });
+
+    expect(result.recommendation?.dueAtElapsedMs).toBe(240_000);
+    expect(result.recommendation?.swaps).toContainEqual({
+      outgoingPlayerId: lucas,
+      incomingPlayerId: fredrik,
+    });
+    expect(result.recommendation?.projectedActualMsByPlayer[lucas]).toBe(0);
   });
 });
