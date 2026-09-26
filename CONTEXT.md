@@ -52,6 +52,10 @@ _Avoid_: Stint length, countdown reset
 A rhythm boundary already used by a change made in the second half of the interval before it — an early confirmation, or a manual substitution that brings in the child planned to come in next. The next recommendation moves to the following boundary, and the child who was planned out stays on until then.
 _Avoid_: Skipped substitution, reset
 
+**Settling-in**:
+A child who came on less than one substitution-rhythm interval ago is still settling in and is not recommended off at the next boundary; a child who just went off is likewise not the first choice to come straight back on. Settling-in may cost a small fairness imbalance rather than break the cadence.
+_Avoid_: Protected player, lock
+
 **Welfare change**:
 A coach-initiated substitution outside the fixed rhythm because a child is injured, tired, upset, or otherwise needs attention. It may happen at any time and causes only future player assignments to adapt.
 _Avoid_: Fairness correction, emergency optimization

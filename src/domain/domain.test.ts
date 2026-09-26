@@ -619,6 +619,86 @@ describe("planner", () => {
       result.diagnostics.fixedRhythm?.plannedIntervalCountByPlayer;
     expect(plannedIntervals?.[p2]).toBeGreaterThan(0);
   });
+  it.each([
+    { label: "3er, 5 children", size: 5, slots: 3, rhythm: 120_000, end: 720_000 },
+    { label: "3er, 4 children", size: 4, slots: 3, rhythm: 120_000, end: 720_000 },
+    { label: "7er, 10 children", size: 10, slots: 7, rhythm: 240_000, end: 1_200_000 },
+  ])(
+    "never takes a child who came on manually straight back off ($label)",
+    ({ size, slots, rhythm, end }) => {
+      const ids = Array.from({ length: size }, (_, index) => playerId(`p${index + 1}`));
+      type State = {
+        t: number;
+        lineup: PlayerId[];
+        actual: Record<PlayerId, number>;
+        since: Record<PlayerId, number>;
+      };
+      const plan = (state: State, manual = false) => {
+        const ideal = (state.t * slots) / size;
+        const balances = Object.fromEntries(
+          ids.map((id) => [id, (state.actual[id] ?? 0) - ideal]),
+        );
+        return planMatch({
+          nowElapsedMs: state.t,
+          plannedEndElapsedMs: end,
+          fieldSlots: slots,
+          orderedAvailablePlayerIds: ids,
+          currentLineupIds: state.lineup,
+          balancesMsByPlayer: balances,
+          currentFieldStintMsByPlayer: Object.fromEntries(
+            state.lineup.map((id) => [id, state.t - state.since[id]!]),
+          ),
+          currentBenchStintMsByPlayer: Object.fromEntries(
+            ids
+              .filter((id) => !state.lineup.includes(id))
+              .map((id) => [id, state.t - (state.since[id] ?? 0)]),
+          ),
+          actualMsByPlayer: state.actual,
+          minimumPreferredStintMs: 60_000,
+          fixedSubstitutionRhythmMs: rhythm,
+          manualDeviation: manual,
+        });
+      };
+      const advance = (state: State, to: number): State => {
+        const actual = { ...state.actual };
+        for (const id of state.lineup) actual[id] = (actual[id] ?? 0) + to - state.t;
+        return { ...state, t: to, actual };
+      };
+      const swap = (state: State, out: PlayerId, incoming: PlayerId): State => ({
+        ...state,
+        lineup: state.lineup.map((id) => (id === out ? incoming : id)),
+        since: { ...state.since, [incoming]: state.t, [out]: state.t },
+      });
+      let state: State = {
+        t: 0,
+        lineup: ids.slice(0, slots),
+        actual: {},
+        since: Object.fromEntries(ids.map((id) => [id, 0])),
+      };
+      const violations: string[] = [];
+      while (state.t + rhythm < end) {
+        const midInterval = advance(state, state.t + rhythm / 2 + 10_000);
+        for (const out of midInterval.lineup)
+          for (const incoming of ids.filter((id) => !midInterval.lineup.includes(id))) {
+            const next = plan(swap(midInterval, out, incoming), true).recommendation;
+            if (
+              next &&
+              next.dueAtElapsedMs - midInterval.t < rhythm &&
+              next.swaps.some((step) => step.outgoingPlayerId === incoming)
+            )
+              violations.push(
+                `${String(incoming)} for ${String(out)} at ${midInterval.t}`,
+              );
+          }
+        const recommendation = plan(state).recommendation;
+        if (!recommendation) break;
+        state = advance(state, recommendation.dueAtElapsedMs);
+        for (const step of recommendation.swaps)
+          state = swap(state, step.outgoingPlayerId, step.incomingPlayerId);
+      }
+      expect(violations).toEqual([]);
+    },
+  );
   it("uses the child-first cyclic ring for equal five-player fixed rhythms", () => {
     const ask = playerId("Ask");
     const henrik = playerId("Henrik");

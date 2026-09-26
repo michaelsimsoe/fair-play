@@ -816,9 +816,30 @@ function fixedRhythmPlan(
       (id) => Math.abs(balanceForCycle(id) - balanceForCycle(ids[0]!)) < 1e-7,
     ) &&
     ids.every((id) => counts[id] === cyclicCounts[id]);
+  /*
+   * A child who came on between two boundaries (manual change) has not had a
+   * full interval yet, so they stay on at the next boundary rather than being
+   * taken straight back off. Likewise a child just taken off is not the first
+   * choice to come straight back on.
+   */
+  const enteredAt = Object.fromEntries(
+    lineup.map((id) => [
+      id,
+      input.nowElapsedMs - amount(input.currentFieldStintMsByPlayer, id),
+    ]),
+  ) as Record<PlayerId, number>;
+  const leftAt = Object.fromEntries(
+    ids
+      .filter((id) => !lineup.includes(id))
+      .map((id) => [
+        id,
+        input.nowElapsedMs - amount(input.currentBenchStintMsByPlayer ?? {}, id),
+      ]),
+  ) as Record<PlayerId, number>;
   for (let interval = 0; interval < intervalCount; interval += 1) {
     if (interval > 0) {
       const dueAtElapsedMs = nextBoundary + (interval - 1) * rhythm;
+      const lineupBefore = lineup;
       const retained = retainedFixedStep(input, dueAtElapsedMs, lineup, ids);
       if (retained) {
         steps.push(retained);
@@ -842,6 +863,32 @@ function fixedRhythmPlan(
       } else {
         const remainingIntervals = intervalCount - interval;
         const residual = (id: PlayerId) => counts[id]! - used[id]!;
+        const fresh = (id: PlayerId) =>
+          lineup.includes(id) && dueAtElapsedMs - enteredAt[id]! < rhythm;
+        const justLeft = (id: PlayerId) =>
+          !lineup.includes(id) && dueAtElapsedMs - (leftAt[id] ?? -Infinity) < rhythm;
+        for (const id of lineup.filter((id) => fresh(id) && residual(id) === 0)) {
+          const forcedCount = ids.filter(
+            (other) => residual(other) === remainingIntervals,
+          ).length;
+          const donor = lineup
+            .filter((other) => !fresh(other) && residual(other) > 0)
+            .sort(
+              (a, b) =>
+                Number(residual(a) === remainingIntervals) -
+                  Number(residual(b) === remainingIntervals) ||
+                residual(a) - residual(b) ||
+                priority(b, a),
+            )[0];
+          if (!donor) continue;
+          const forcedAfter =
+            forcedCount +
+            (remainingIntervals === 1 ? 1 : 0) -
+            (residual(donor) === remainingIntervals ? 1 : 0);
+          if (forcedAfter > input.fieldSlots) continue;
+          counts[id] = counts[id]! + 1;
+          counts[donor] = counts[donor]! - 1;
+        }
         const forced = ids.filter((id) => residual(id) === remainingIntervals);
         if (forced.length > input.fieldSlots) return undefined;
         const selectable = ids.filter((id) => residual(id) > 0);
@@ -853,10 +900,17 @@ function fixedRhythmPlan(
         const bench = selectable.filter(
           (id) => !lineup.includes(id) && !selected.has(id),
         );
+        const settled = (id: PlayerId) => (fresh(id) || justLeft(id) ? 1 : 0);
         const ranked = (players: readonly PlayerId[], direction: 1 | -1) =>
           [...players].sort(
             (a, b) =>
+              (lineup.includes(a) && lineup.includes(b)
+                ? direction * (settled(b) - settled(a))
+                : 0) ||
               direction * (residual(b) - residual(a)) ||
+              (!lineup.includes(a) && !lineup.includes(b)
+                ? settled(a) - settled(b)
+                : 0) ||
               (direction === 1 ? priority(a, b) : priority(b, a)),
           );
         if (forced.length === 0 && current.length > 0 && bench.length > 0) {
@@ -896,6 +950,10 @@ function fixedRhythmPlan(
         }
         lineup = nextLineup;
       }
+      for (const id of lineup)
+        if (!lineupBefore.includes(id)) enteredAt[id] = dueAtElapsedMs;
+      for (const id of lineupBefore)
+        if (!lineup.includes(id)) leftAt[id] = dueAtElapsedMs;
     }
     for (const id of lineup) {
       used[id] = used[id]! + 1;
