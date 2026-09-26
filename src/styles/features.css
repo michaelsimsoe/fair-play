@@ -500,6 +500,13 @@
   color: var(--surface);
 }
 
+.recommendation--waiting .recommendation__status {
+  border-color: var(--line);
+  background: var(--surface-strong);
+  box-shadow: none;
+  color: var(--muted);
+}
+
 .live-page--prepare .live-hero {
   border-radius: 22px;
   background: color-mix(in srgb, var(--warning-soft), transparent 32%);
@@ -576,6 +583,12 @@
 
 .confirm-swap:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent), white 10%);
+}
+
+.wait-button {
+  width: min(100%, 520px);
+  min-height: 46px;
+  margin-top: 7px;
 }
 
 .live-error {

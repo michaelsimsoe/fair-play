@@ -186,6 +186,10 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
   const [manualBalanceTreatment, setManualBalanceTreatment] =
     useState<BalanceTreatment>("preserve");
   const [manualReason, setManualReason] = useState<ManualChangeReason>("ordinary");
+  const [snooze, setSnooze] = useState<{
+    recommendationId: string;
+    untilElapsedMs: number;
+  }>();
   const [projectionOpen, setProjectionOpen] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [availabilityAction, setAvailabilityAction] = useState<{
@@ -374,6 +378,10 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
     const update = () => {
       const nextElapsed = clockRef.current.elapsedMs();
       const previousElapsed = previousElapsedRef.current;
+      const activeSnoozeUntil =
+        snooze && snooze.recommendationId === recommendation?.id
+          ? snooze.untilElapsedMs
+          : undefined;
       if (
         Math.floor(nextElapsed / 1000) !== Math.floor(previousElapsed / 1000) ||
         nextElapsed === match.plannedDurationMs
@@ -404,6 +412,15 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
           vibrateForChange(settings.vibrationEnabled);
         }
       }
+      if (
+        activeSnoozeUntil !== undefined &&
+        previousElapsed < activeSnoozeUntil &&
+        nextElapsed >= activeSnoozeUntil
+      ) {
+        setSnooze(undefined);
+        if (settings.soundEnabled) void audio.play("change");
+        vibrateForChange(settings.vibrationEnabled);
+      }
       if (nextElapsed >= match.plannedDurationMs && !endAlerted.current) {
         endAlerted.current = true;
         if (settings.soundEnabled) void audio.play("end");
@@ -418,6 +435,7 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
     match.alertLeadMs,
     match.plannedDurationMs,
     recommendation,
+    snooze,
     settings.soundEnabled,
     settings.vibrationEnabled,
   ]);
@@ -1152,6 +1170,15 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
     ? recommendation.dueAtElapsedMs - elapsedMs
     : undefined;
   const due = dueDelta !== undefined && dueDelta <= 0;
+  const activeSnoozeUntilElapsedMs =
+    snooze && snooze.recommendationId === recommendation?.id
+      ? snooze.untilElapsedMs
+      : undefined;
+  const waiting =
+    due &&
+    activeSnoozeUntilElapsedMs !== undefined &&
+    elapsedMs < activeSnoozeUntilElapsedMs;
+  const alertDue = due && !waiting;
   const preparing =
     dueDelta !== undefined && dueDelta > 0 && dueDelta <= match.alertLeadMs;
   const firstSwap = recommendation?.swaps[0];
@@ -1189,13 +1216,21 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
       (left, right) => Math.abs(right.differenceMs) - Math.abs(left.differenceMs),
     )[0];
   const projectedDifferences = teamProjectedRows.map((player) => player.differenceMs);
-  const projectedDifferenceRange =
-    projectedDifferences.length > 0
-      ? Math.max(...projectedDifferences) - Math.min(...projectedDifferences)
-      : 0;
   const hasProjectedDifference = projectedDifferences.some(
     (difference) => Math.abs(difference) >= 500,
   );
+  const activeFixedRhythmMs = effectiveSubstitutionInterval(match, bundle.tournament);
+  const fairnessStatus = recommendation?.diagnostics.fixedRhythm
+    ?.intervalBalanceWithinOne
+    ? "Innenfor planen"
+    : highlightedDifference
+      ? activeFixedRhythmMs &&
+        Math.abs(highlightedDifference.differenceMs) >= activeFixedRhythmMs
+        ? `${highlightedDifference.name} ett intervall bak`
+        : `${highlightedDifference.name} prioriteres senere`
+      : "Innenfor planen";
+  const showFairnessStatus =
+    Boolean(recommendation?.diagnostics.fixedRhythm) || hasProjectedDifference;
   const fieldPlayers = players.filter((player) =>
     projection.currentLineupIds.includes(playerId(player.id)),
   );
@@ -1233,7 +1268,7 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
   return (
     <main
       className={`live-page ${preparing ? "live-page--prepare" : ""} ${
-        due ? "live-page--due" : ""
+        alertDue ? "live-page--due" : ""
       }`}
     >
       <header className="live-header">
@@ -1281,15 +1316,21 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
           <div
             className={`recommendation ${
               preparing ? "recommendation--prepare" : ""
-            } ${due ? "recommendation--due" : ""}`}
-            aria-live={due ? "assertive" : "off"}
+            } ${waiting ? "recommendation--waiting" : ""} ${
+              alertDue ? "recommendation--due" : ""
+            }`}
+            aria-live={alertDue ? "assertive" : "off"}
           >
             <p className="recommendation__status">
-              {due
-                ? "BYTT NÅ"
-                : preparing
-                  ? `GJØR KLAR · ${formatDuration(Math.max(0, dueDelta ?? 0))}`
-                  : `Neste bytte om ${formatDuration(Math.max(0, dueDelta ?? 0))}`}
+              {waiting
+                ? `VENTER · ${formatDuration(
+                    Math.max(0, (activeSnoozeUntilElapsedMs ?? elapsedMs) - elapsedMs),
+                  )}`
+                : alertDue
+                  ? "BYTT NÅ"
+                  : preparing
+                    ? `GJØR KLAR · ${formatDuration(Math.max(0, dueDelta ?? 0))}`
+                    : `Neste bytte om ${formatDuration(Math.max(0, dueDelta ?? 0))}`}
             </p>
             {preparing && (
               <span className="sr-only" role="status">
@@ -1321,7 +1362,7 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
                   .join(" + ")}
               </p>
             )}
-            {due && (
+            {alertDue && (
               <p className="overdue">
                 +{formatDuration(Math.abs(dueDelta ?? 0))} · Ta byttet når spillet
                 tillater det
@@ -1335,24 +1376,15 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
           </div>
         )}
 
-        {recommendation && hasProjectedDifference && highlightedDifference && (
+        {recommendation && showFairnessStatus && (
           <button
             type="button"
             className="projection-summary"
             onClick={() => setProjectionOpen(true)}
           >
             <span>Prognose</span>
-            <strong>
-              {highlightedDifference.name}{" "}
-              {formatSignedDuration(highlightedDifference.differenceMs)} · spenn{" "}
-              {formatDuration(projectedDifferenceRange)}
-            </strong>
-            <span>
-              {recommendation.diagnostics.currentMatchDifferencesWithinTolerance
-                ? "Innenfor ±00:30"
-                : "Kompensasjon trengs"}{" "}
-              · Se alle
-            </span>
+            <strong>{fairnessStatus}</strong>
+            <span>Se detaljer</span>
           </button>
         )}
 
@@ -1375,6 +1407,25 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
             onClick={() => void confirmRecommendation()}
           >
             BYTTET ER GJORT
+          </Button>
+        )}
+        {due && (
+          <Button
+            className="wait-button"
+            variant="secondary"
+            full
+            disabled={match.status === "paused" || saveState === "saving"}
+            onClick={() =>
+              waiting
+                ? setSnooze(undefined)
+                : recommendation &&
+                  setSnooze({
+                    recommendationId: recommendation.id,
+                    untilElapsedMs: elapsedMs + 20_000,
+                  })
+            }
+          >
+            {waiting ? "VIS BYTTET NÅ" : "VENT 20 SEK"}
           </Button>
         )}
       </section>
@@ -1816,48 +1867,40 @@ function ManualDialog({
         )}
         {outgoing && (
           <div className="injury-options">
-            <fieldset className="reason-picker">
-              <legend>Hvorfor bytter du?</legend>
-              {[
-                ["ordinary", "Vanlig bytte"],
-                ["needs-break", "Trenger pause"],
-                ["lost-motivation", "Mistet motivasjonen"],
-                ["injured", "Skadet"],
-              ].map(([value, label]) => (
-                <button
-                  type="button"
-                  key={value}
-                  aria-pressed={reason === value}
-                  onClick={() => {
-                    const nextReason = value as ManualChangeReason;
-                    onReason(nextReason);
-                    if (nextReason !== "ordinary" && pauseScope === "none") {
-                      onPauseScope("current");
-                    }
-                    if (nextReason === "ordinary") {
-                      onPauseScope("none");
-                    }
-                  }}
-                >
-                  {label}
-                </button>
-              ))}
-            </fieldset>
             <label className="toggle-row manual-hold-out">
               <span>
-                <strong>Skadet / trenger pause</strong>
-                <small>Spilleren får ikke nytt mål mens pausen varer.</small>
+                <strong>Barnet trenger pause</strong>
+                <small>Vis flere valg for motivasjon, skade og varighet.</small>
               </span>
               <input
                 type="checkbox"
                 checked={pauseScope !== "none"}
-                onChange={(event) =>
-                  onPauseScope(event.currentTarget.checked ? "current" : "none")
-                }
+                onChange={(event) => {
+                  const checked = event.currentTarget.checked;
+                  onPauseScope(checked ? "current" : "none");
+                  onReason(checked ? "needs-break" : "ordinary");
+                }}
               />
             </label>
             {pauseScope !== "none" && (
               <div className="form-grid injury-options__details">
+                <fieldset className="reason-picker">
+                  <legend>Hva trenger barnet?</legend>
+                  {[
+                    ["needs-break", "Kort pause"],
+                    ["lost-motivation", "Mistet motivasjonen"],
+                    ["injured", "Skadet"],
+                  ].map(([value, label]) => (
+                    <button
+                      type="button"
+                      key={value}
+                      aria-pressed={reason === value}
+                      onClick={() => onReason(value as ManualChangeReason)}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </fieldset>
                 <label className="field">
                   <span className="field__label">Hvor lenge?</span>
                   <select

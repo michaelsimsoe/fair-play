@@ -45,8 +45,16 @@ An advisory future exchange calculated from the actual match history and current
 _Avoid_: Scheduled substitution, automatic substitution
 
 **Substitution rhythm**:
-The preferred fixed grid of recommendation times on the match clock, such as every two minutes at 02:00, 04:00, 06:00, and so on. A delayed confirmation does not move the later grid times, although fairness or feasibility may require a recommendation between them.
+The fixed grid of automatic recommendation times on the match clock, such as every two minutes at 02:00, 04:00, 06:00, and so on. A delayed confirmation does not move later boundaries, and fairness never creates an automatic off-grid substitution.
 _Avoid_: Stint length, countdown reset
+
+**Welfare change**:
+A coach-initiated substitution outside the fixed rhythm because a child is injured, tired, upset, or otherwise needs attention. It may happen at any time and causes only future player assignments to adapt.
+_Avoid_: Fairness correction, emergency optimization
+
+**Wait**:
+A temporary acknowledgement that a due recommendation cannot happen safely yet. It quiets the alert without recording a substitution or changing the intended pair.
+_Avoid_: Skip, confirm later
 
 **Projected difference**:
 The expected difference between a player's actual time and match target if the current recommendation plan is followed.

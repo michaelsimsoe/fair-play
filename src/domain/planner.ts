@@ -208,20 +208,11 @@ function preferredDelay(
 
 function retainedFixedStep(
   input: PlannerInput,
-  simulation: Simulation,
+  dueAtElapsedMs: number,
   lineup: readonly PlayerId[],
   ids: readonly PlayerId[],
 ): PlannerPreviewStep | undefined {
-  const rhythm = fixedSubstitutionRhythm(input);
-  if (
-    rhythm === undefined ||
-    input.manualDeviation ||
-    input.availabilityChanged ||
-    !input.previousPreview
-  )
-    return undefined;
-  const dueAtElapsedMs = (Math.floor(simulation.now / rhythm) + 1) * rhythm;
-  if (dueAtElapsedMs >= simulation.end) return undefined;
+  if (!input.previousPreview) return undefined;
   const intended = input.previousPreview.find(
     (step) => step.dueAtElapsedMs === dueAtElapsedMs,
   );
@@ -493,8 +484,6 @@ function nextStep(
   const lineup = simulation.lineup.filter((id) => ids.includes(id));
   const bench = ids.filter((id) => !lineup.includes(id));
   if (lineup.length !== input.fieldSlots || bench.length === 0) return undefined;
-  const retained = retainedFixedStep(input, simulation, lineup, ids);
-  if (retained) return retained;
   const allocation = allocateFuture(
     input,
     simulation.balances,
@@ -645,11 +634,6 @@ function advanceSimulation(
   simulation.steps.push(step);
 }
 
-const fixedGridStart = (input: PlannerInput) => {
-  const rhythm = fixedSubstitutionRhythm(input);
-  return rhythm !== undefined && input.nowElapsedMs % rhythm === 0 ? rhythm : undefined;
-};
-
 function fixedRhythmPlan(
   input: PlannerInput,
   ids: readonly PlayerId[],
@@ -659,10 +643,13 @@ function fixedRhythmPlan(
     balances: Record<PlayerId, number>;
   }>,
   initialBalances: Readonly<Record<PlayerId, number>>,
-  initialAllocation: CappedAllocation,
 ): PlannerResult | undefined {
-  const rhythm = fixedGridStart(input);
+  const rhythm = fixedSubstitutionRhythm(input);
   const remaining = input.plannedEndElapsedMs - input.nowElapsedMs;
+  const nextBoundary =
+    rhythm === undefined
+      ? undefined
+      : (Math.floor(input.nowElapsedMs / rhythm) + 1) * rhythm;
   if (
     rhythm === undefined ||
     remaining <= 0 ||
@@ -671,10 +658,49 @@ function fixedRhythmPlan(
     input.currentLineupIds.some((id) => !ids.includes(id))
   )
     return undefined;
+  if (nextBoundary === undefined || nextBoundary >= input.plannedEndElapsedMs) {
+    const maximums = futureMaximums(input, ids, remaining);
+    const allocation = Object.fromEntries(
+      ids.map((id) => [id, input.currentLineupIds.includes(id) ? remaining : 0]),
+    );
+    return {
+      preview: [],
+      diagnostics: {
+        futureAllocationCaps: {
+          capsFeasible: ids.every((id) => allocation[id]! <= maximums[id]!),
+          requestedCapacityMs: Object.values(maximums).reduce(
+            (total, maximum) => total + maximum,
+            0,
+          ),
+          requiredCapacityMs: remaining * input.fieldSlots,
+          allocatedFutureActualMsByPlayer: allocation,
+          relaxations: ids
+            .filter((id) => allocation[id]! > maximums[id]!)
+            .map((id) => ({
+              playerId: id,
+              maximumFutureActualMs: maximums[id]!,
+              allocatedFutureActualMs: allocation[id]!,
+              relaxedByMs: allocation[id]! - maximums[id]!,
+            })),
+        },
+        fixedRhythm: {
+          plannedIntervalCountByPlayer: Object.fromEntries(
+            ids.map((id) => [id, input.currentLineupIds.includes(id) ? 1 : 0]),
+          ),
+          intervalBalanceWithinOne: true,
+        },
+      },
+    };
+  }
 
   const intervalCount = Math.ceil(remaining / rhythm);
   const intervalDuration = (interval: number) =>
-    Math.min(rhythm, remaining - interval * rhythm);
+    interval === 0
+      ? nextBoundary - input.nowElapsedMs
+      : Math.min(
+          rhythm,
+          input.plannedEndElapsedMs - (nextBoundary + (interval - 1) * rhythm),
+        );
   const totalSlots = intervalCount * input.fieldSlots;
   const matchOnly = matchOnlyIds(input, ids);
   const maximums = futureMaximums(input, ids, remaining);
@@ -729,63 +755,28 @@ function fixedRhythmPlan(
 
   let lineup = [...input.currentLineupIds];
   const steps: PlannerPreviewStep[] = [];
-  const mostBehindBenchedBalance = Math.min(
-    ...ids
-      .filter((id) => !lineup.includes(id))
-      .map((id) =>
-        amount(matchOnly.has(id) ? currentMatch.balances : initialBalances, id),
-      ),
-  );
-  const initialForcedOutgoing = lineup
-    .filter(
-      (id) =>
-        counts[id] === 0 ||
-        amount(initialAllocation.allocationMsByPlayer, id) < intervalDuration(0) ||
-        amount(matchOnly.has(id) ? currentMatch.balances : initialBalances, id) -
-          mostBehindBenchedBalance >=
-          remaining,
-    )
-    .sort(
-      (a, b) =>
-        amount(initialAllocation.allocationMsByPlayer, a) -
-          amount(initialAllocation.allocationMsByPlayer, b) || priority(a, b),
-    );
-  const initialIncoming = ids
-    .filter((id) => !lineup.includes(id) && counts[id]! > 0)
-    .sort(
-      (a, b) =>
-        amount(initialAllocation.allocationMsByPlayer, b) -
-          amount(initialAllocation.allocationMsByPlayer, a) || priority(a, b),
-    );
-  const initialSwaps = initialForcedOutgoing
-    .map((outgoingPlayerId, index) => ({
-      outgoingPlayerId,
-      incomingPlayerId: initialIncoming[index],
-    }))
-    .filter(
-      (
-        swap,
-      ): swap is Readonly<{
-        outgoingPlayerId: PlayerId;
-        incomingPlayerId: PlayerId;
-      }> =>
-        swap.incomingPlayerId !== undefined &&
-        (counts[swap.outgoingPlayerId] === 0 ||
-          amount(initialAllocation.allocationMsByPlayer, swap.incomingPlayerId) >
-            amount(initialAllocation.allocationMsByPlayer, swap.outgoingPlayerId)),
-    );
-  if (initialSwaps.length > 0) {
-    const outgoing = new Set(initialSwaps.map((swap) => swap.outgoingPlayerId));
-    lineup = [
-      ...lineup.filter((id) => !outgoing.has(id)),
-      ...initialSwaps.map((swap) => swap.incomingPlayerId),
-    ];
-    steps.push({
-      dueAtElapsedMs: input.nowElapsedMs,
-      lineupBeforeIds: input.currentLineupIds,
-      lineupAfterIds: lineup,
-      swaps: initialSwaps,
-    });
+  for (const id of lineup) {
+    if (counts[id]! >= 1) continue;
+    counts[id] = 1;
+    const replacement = [...ids]
+      .filter(
+        (candidate) =>
+          candidate !== id &&
+          counts[candidate]! > 0 &&
+          (!lineup.includes(candidate) || counts[candidate]! > 1),
+      )
+      .sort((a, b) => counts[b]! - counts[a]! || priority(b, a))[0];
+    if (replacement) counts[replacement] = counts[replacement]! - 1;
+  }
+  for (const id of ids.filter((id) => !lineup.includes(id))) {
+    while (counts[id]! > intervalCount - 1) {
+      const replacement = [...lineup].sort(
+        (a, b) => counts[a]! - counts[b]! || priority(a, b),
+      )[0];
+      if (!replacement) break;
+      counts[id] = counts[id]! - 1;
+      counts[replacement] = counts[replacement]! + 1;
+    }
   }
 
   const used = copyTotals(ids, {});
@@ -805,7 +796,6 @@ function fixedRhythmPlan(
    * tie-break: it bounds initial bench waits and prevents immediate returns.
    */
   const useCyclicRing =
-    initialSwaps.length === 0 &&
     lineup.every((id, index) => id === ids[index]) &&
     ids.every(
       (id) => Math.abs(balanceForCycle(id) - balanceForCycle(ids[0]!)) < 1e-7,
@@ -813,7 +803,12 @@ function fixedRhythmPlan(
     ids.every((id) => counts[id] === cyclicCounts[id]);
   for (let interval = 0; interval < intervalCount; interval += 1) {
     if (interval > 0) {
-      if (useCyclicRing) {
+      const dueAtElapsedMs = nextBoundary + (interval - 1) * rhythm;
+      const retained = retainedFixedStep(input, dueAtElapsedMs, lineup, ids);
+      if (retained) {
+        steps.push(retained);
+        lineup = [...retained.lineupAfterIds];
+      } else if (useCyclicRing) {
         const outgoingPlayerId = ids[(interval - 1) % ids.length]!;
         const incomingPlayerId = ids[(interval - 1 + input.fieldSlots) % ids.length]!;
         if (!lineup.includes(outgoingPlayerId) || lineup.includes(incomingPlayerId))
@@ -823,7 +818,7 @@ function fixedRhythmPlan(
           incomingPlayerId,
         ];
         steps.push({
-          dueAtElapsedMs: input.nowElapsedMs + interval * rhythm,
+          dueAtElapsedMs,
           lineupBeforeIds: lineup,
           lineupAfterIds: nextLineup,
           swaps: [{ outgoingPlayerId, incomingPlayerId }],
@@ -875,7 +870,7 @@ function fixedRhythmPlan(
         if (outgoing.length !== incoming.length) return undefined;
         if (outgoing.length > 0) {
           steps.push({
-            dueAtElapsedMs: input.nowElapsedMs + interval * rhythm,
+            dueAtElapsedMs,
             lineupBeforeIds: lineup,
             lineupAfterIds: nextLineup,
             swaps: outgoing.map((outgoingPlayerId, index) => ({
@@ -892,7 +887,6 @@ function fixedRhythmPlan(
       allocated[id] = allocated[id]! + intervalDuration(interval);
     }
   }
-  if (ids.some((id) => used[id] !== counts[id])) return undefined;
 
   const allocation = allocated;
   const futureAllocationCaps: FutureAllocationCapDiagnostics = {
@@ -1034,14 +1028,19 @@ export function planMatch(input: PlannerInput): PlannerResult {
     futureMaximums(input, ids, remaining),
     remaining * input.fieldSlots,
   );
-  const fixedPlan = fixedRhythmPlan(
-    input,
-    ids,
-    currentMatch,
-    initialBalances,
-    initialAllocation,
-  );
+  const fixedPlan = fixedRhythmPlan(input, ids, currentMatch, initialBalances);
   if (fixedPlan) return fixedPlan;
+  if (fixedSubstitutionRhythm(input) !== undefined)
+    return {
+      preview: [],
+      diagnostics: {
+        futureAllocationCaps,
+        fixedRhythm: {
+          plannedIntervalCountByPlayer: copyTotals(ids, {}),
+          intervalBalanceWithinOne: true,
+        },
+      },
+    };
   const simulation: Simulation = {
     now: input.nowElapsedMs,
     end: input.plannedEndElapsedMs,

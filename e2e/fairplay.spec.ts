@@ -79,20 +79,26 @@ test("a delayed confirmation records reality and reports the remaining imbalance
   await expect(
     page.getByText("+00:27 · Ta byttet når spillet tillater det"),
   ).toBeVisible();
+  await page.getByRole("button", { name: "VENT 20 SEK" }).click();
+  await expect(page.getByText("VENTER · 00:20")).toBeVisible();
+  await expect(page.locator(".live-page")).not.toHaveClass(/live-page--due/);
+  await page.getByRole("button", { name: "VIS BYTTET NÅ" }).click();
+  await expect(page.getByText("BYTT NÅ")).toBeVisible();
   await page.getByRole("button", { name: "BYTTET ER GJORT" }).click();
 
   const projection = page.locator(".projection-summary");
-  await expect(projection).toContainText("Lucas");
-  await expect(projection).toContainText("−0:27");
-  await expect(projection).toContainText("Innenfor ±00:30");
+  await expect(projection).toContainText("Lucas prioriteres senere");
+  await expect(projection).toContainText("Se detaljer");
   await projection.click();
+  const projectionDialog = page.getByRole("dialog", {
+    name: "Prognose etter kampen",
+  });
+  await expect(projectionDialog).toBeVisible();
+  await expect(projectionDialog).toContainText("Forskjeller innen ±00:30");
   await expect(
-    page.getByRole("dialog", { name: "Prognose etter kampen" }),
-  ).toBeVisible();
-  await page
-    .getByRole("dialog", { name: "Prognose etter kampen" })
-    .getByRole("button", { name: "Lukk" })
-    .click();
+    projectionDialog.locator(".list-row").filter({ hasText: "Lucas" }),
+  ).toContainText("−0:27");
+  await projectionDialog.getByRole("button", { name: "Lukk" }).click();
   await page.clock.fastForward(513_000);
   await page.getByRole("button", { name: "AVSLUTT KAMP" }).click();
   await expect(page.getByText("03:27")).toBeVisible();
@@ -130,6 +136,19 @@ test("reload and pause recovery preserve active elapsed time and lineup", async 
   await expect(page.getByText("10:00")).toBeVisible();
 });
 
+test("wait quiets an overdue alert and reminds again", async ({ page }) => {
+  await openWithClock(page);
+  await startFirstSeedMatch(page);
+  await page.clock.fastForward(180_000);
+
+  await page.getByRole("button", { name: "VENT 20 SEK" }).click();
+  await expect(page.getByText("VENTER · 00:20")).toBeVisible();
+  await expect(page.locator(".live-page")).not.toHaveClass(/live-page--due/);
+  await page.clock.fastForward(20_000);
+  await expect(page.getByText("BYTT NÅ")).toBeVisible();
+  await expect(page.getByRole("button", { name: "VENT 20 SEK" })).toBeVisible();
+});
+
 test("manual deviation changes the real lineup and audited undo restores it", async ({
   page,
 }) => {
@@ -139,6 +158,7 @@ test("manual deviation changes the real lineup and audited undo restores it", as
 
   await page.getByRole("button", { name: "Bytt ut Fredrik H" }).click();
   const dialog = page.getByRole("dialog", { name: "Manuelt bytte" });
+  await expect(dialog.getByText("Hva trenger barnet?")).toHaveCount(0);
   await dialog.getByRole("button", { name: "REGISTRER BYTTE" }).click();
 
   await expect(
@@ -159,6 +179,7 @@ test("manual deviation changes the real lineup and audited undo restores it", as
 
   await page.getByRole("button", { name: "Bytt ut Fredrik H" }).click();
   const holdOutDialog = page.getByRole("dialog", { name: "Manuelt bytte" });
+  await holdOutDialog.getByRole("checkbox", { name: /Barnet trenger pause/ }).check();
   await holdOutDialog.getByRole("button", { name: "Mistet motivasjonen" }).click();
   await holdOutDialog.getByRole("button", { name: "REGISTRER BYTTE" }).click();
   await expect(
@@ -190,7 +211,7 @@ test("an injury pause carries through the next match without creating catch-up t
 
   await page.getByRole("button", { name: "Bytt ut Fredrik H" }).click();
   const dialog = page.getByRole("dialog", { name: "Manuelt bytte" });
-  await dialog.getByRole("checkbox", { name: /Skadet \/ trenger pause/ }).check();
+  await dialog.getByRole("checkbox", { name: /Barnet trenger pause/ }).check();
   await dialog
     .getByLabel("Hvor lenge?")
     .selectOption({ label: "Denne kampen + neste kamp" });
@@ -217,7 +238,7 @@ test("a resting player remains visible and returns with one tap", async ({ page 
 
   await page.getByRole("button", { name: "Bytt ut Fredrik H" }).click();
   const dialog = page.getByRole("dialog", { name: "Manuelt bytte" });
-  await dialog.getByRole("button", { name: "Trenger pause" }).click();
+  await dialog.getByRole("checkbox", { name: /Barnet trenger pause/ }).check();
   await dialog.getByRole("button", { name: "REGISTRER BYTTE" }).click();
 
   const paused = page.locator(".paused-player").filter({ hasText: "Fredrik H" });
@@ -237,7 +258,7 @@ test("the coach can waive pre-injury balance instead of carrying it forward", as
 
   await page.getByRole("button", { name: "Bytt ut Ask" }).click();
   const dialog = page.getByRole("dialog", { name: "Manuelt bytte" });
-  await dialog.getByRole("checkbox", { name: /Skadet \/ trenger pause/ }).check();
+  await dialog.getByRole("checkbox", { name: /Barnet trenger pause/ }).check();
   await dialog.getByLabel("Eksisterende avvik").selectOption("waive");
   await dialog.getByRole("button", { name: "REGISTRER BYTTE" }).click();
   await page.clock.fastForward(660_000);
@@ -258,7 +279,7 @@ test("summary correction restores an injury pause and future availability", asyn
 
   await page.getByRole("button", { name: "Bytt ut Fredrik H" }).click();
   const dialog = page.getByRole("dialog", { name: "Manuelt bytte" });
-  await dialog.getByRole("checkbox", { name: /Skadet \/ trenger pause/ }).check();
+  await dialog.getByRole("checkbox", { name: /Barnet trenger pause/ }).check();
   await dialog
     .getByLabel("Hvor lenge?")
     .selectOption({ label: "Denne kampen + neste kamp" });
