@@ -19,6 +19,14 @@ export function toDomainConfiguration(match: MatchRecord): MatchConfiguration {
   };
 }
 
+const toDomainRoleAssignments = (
+  assignments: readonly { roleSlotId: string; playerId: string }[],
+) =>
+  assignments.map((assignment) => ({
+    roleSlotId: assignment.roleSlotId,
+    playerId: playerId(assignment.playerId),
+  }));
+
 function eventBase(event: MatchEventRecord) {
   return {
     id: matchEventId(event.id),
@@ -47,6 +55,16 @@ export function toDomainEvent(event: MatchEventRecord): MatchEvent {
           ...(event.payload.playersOnField === undefined
             ? {}
             : { playersOnField: event.payload.playersOnField }),
+          ...(event.payload.formationId
+            ? { formationId: event.payload.formationId }
+            : {}),
+          ...(event.payload.starterRoleAssignments
+            ? {
+                starterRoleAssignments: toDomainRoleAssignments(
+                  event.payload.starterRoleAssignments,
+                ),
+              }
+            : {}),
         },
       };
     case "SUBSTITUTION_CONFIRMED":
@@ -65,6 +83,13 @@ export function toDomainEvent(event: MatchEventRecord): MatchEvent {
           ...(event.payload.recommendationId
             ? { recommendationId: event.payload.recommendationId }
             : {}),
+          ...(event.payload.roleAssignmentsAfter
+            ? {
+                roleAssignmentsAfter: toDomainRoleAssignments(
+                  event.payload.roleAssignmentsAfter,
+                ),
+              }
+            : {}),
         },
       };
     case "LINEUP_SYNCHRONIZED":
@@ -77,6 +102,13 @@ export function toDomainEvent(event: MatchEventRecord): MatchEvent {
             ? { lineupBeforeIds: event.payload.lineupBeforeIds.map(playerId) }
             : {}),
           ...(event.payload.reason ? { reason: event.payload.reason } : {}),
+          ...(event.payload.roleAssignmentsAfter
+            ? {
+                roleAssignmentsAfter: toDomainRoleAssignments(
+                  event.payload.roleAssignmentsAfter,
+                ),
+              }
+            : {}),
         },
       };
     case "PLAYER_AVAILABILITY_CHANGED":

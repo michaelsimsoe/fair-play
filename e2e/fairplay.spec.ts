@@ -101,7 +101,7 @@ test("a delayed confirmation records reality and reports the remaining imbalance
   await projectionDialog.getByRole("button", { name: "Lukk" }).click();
   await page.clock.fastForward(513_000);
   await page.getByRole("button", { name: "AVSLUTT KAMP" }).click();
-  await expect(page.getByText("03:27")).toBeVisible();
+  await expect(page.locator("time", { hasText: "03:27" })).toBeVisible();
   await expect(page.getByText(/Lucas inn · Ask ut/)).toBeVisible();
 });
 
@@ -411,6 +411,31 @@ test("loads Krokelvdalen 3 with a fixed two-minute rhythm", async ({ page }) => 
   await expect(page.getByText(/Henrik\s+UT/i)).toBeVisible();
 });
 
+test("the planned incoming child replacing someone else takes the planned slot", async ({
+  page,
+}) => {
+  await openWithClock(page);
+  await page.getByRole("button", { name: "Last inn Krokelvdalen 3" }).click();
+  await page.getByRole("button", { name: "GJØR KLAR KAMP" }).click();
+  await page.getByRole("button", { name: "START KAMP" }).click();
+  await expect(page.getByText("Neste bytte om 02:00")).toBeVisible();
+  await expect(page.getByText(/Kasper\s+INN/i)).toBeVisible();
+  await page.clock.fastForward(100_000);
+
+  await page.getByRole("button", { name: "Bytt ut Kai" }).click();
+  const dialog = page.getByRole("dialog", { name: "Manuelt bytte" });
+  await expect(dialog.locator(".manual-summary")).toContainText("Kasper inn");
+  await expect(dialog.getByText("Teller som det planlagte byttet")).toBeVisible();
+  await dialog.getByRole("button", { name: "REGISTRER BYTTE" }).click();
+
+  await expect(
+    page.locator(".live-player--bench").filter({ hasText: "Kai" }),
+  ).toBeVisible();
+  await expect(page.getByText("Neste bytte om 02:20")).toBeVisible();
+  await page.reload();
+  await expect(page.getByText("Neste bytte om 02:20")).toBeVisible();
+});
+
 test("overrides the fixed rhythm for one match", async ({ page }) => {
   await openWithClock(page);
   await page.getByRole("button", { name: "Last inn Krokelvdalen 3" }).click();
@@ -427,4 +452,67 @@ test("overrides the fixed rhythm for one match", async ({ page }) => {
   await expect(page.getByText(/Adaptiv rettferdig rytme/)).toBeVisible();
   await page.getByRole("button", { name: "START KAMP" }).click();
   await expect(page.getByText("Neste bytte om 02:24")).toBeVisible();
+});
+
+test("a 5-a-side formation keeps the keeper and gives incoming children a position", async ({
+  page,
+}) => {
+  await openWithClock(page);
+  await page.getByRole("button", { name: "Ny spilldag" }).first().click();
+  await page.getByLabel("Navn på spilldagen").fill("5er-cup");
+  await page.getByLabel("Lag").fill("Femmern");
+  await page.getByLabel("Kamplengde (minutter)").fill("12");
+  await page.getByLabel("Bytterytme").selectOption({ label: "Hvert 02:00" });
+  await page.getByRole("radio", { name: "5er" }).check();
+  await page.getByLabel("Formasjon").selectOption({ label: "5er · 1-2-1 (diamant)" });
+  await page.getByRole("button", { name: "Fortsett til spillere" }).click();
+
+  for (const name of ["Ada", "Bo", "Cy", "Di", "Eli", "Fin", "Gus"]) {
+    await page.getByPlaceholder("Spillernavn").fill(name);
+    await page.getByRole("button", { name: "Legg til", exact: true }).click();
+    await expect(
+      page.locator(".list-row__title").getByText(name, { exact: true }),
+    ).toBeVisible();
+  }
+  await page.getByRole("button", { name: "Fortsett til kamper" }).click();
+  await page.getByRole("button", { name: "Legg til kamp" }).click();
+  await page.getByLabel("Motstander").fill("Reinen");
+  await page.getByRole("button", { name: "Lagre kamp" }).click();
+  const matchRow = page.locator(".card").filter({ hasText: "mot Reinen" }).first();
+  await expect(matchRow).toContainText("5er · 1-2-1 (diamant)");
+  await matchRow.locator(".match-row__open").click();
+
+  const pitch = page.getByRole("group", { name: "Posisjoner på banen" });
+  await expect(pitch.locator(".pitch__slot")).toHaveCount(5);
+  await expect(pitch.getByRole("button", { name: "Keeper: Ada" })).toBeVisible();
+  await expect(page.getByText(/Ada står i mål hele kampen\./)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Benk: Fin" })).toBeVisible();
+
+  await page.getByRole("button", { name: "START KAMP" }).click();
+  await expect(page.getByText("Neste bytte om 02:00")).toBeVisible();
+  await page.clock.fastForward(120_000);
+  await expect(page.getByText("BYTT NÅ")).toBeVisible();
+  const livePitch = page.getByRole("group", { name: "På banen" });
+  await expect(livePitch.locator(".pitch__slot")).toHaveCount(5);
+  await expect(livePitch.locator(".pitch__incoming")).toContainText(/Fin/);
+  const layout = await page.evaluate(() => ({
+    viewportHeight: window.innerHeight,
+    scrollHeight: document.documentElement.scrollHeight,
+  }));
+  expect(layout.scrollHeight).toBeLessThanOrEqual(layout.viewportHeight);
+  await page.getByRole("button", { name: "BYTTET ER GJORT" }).click();
+
+  const pwaStatus = page.locator(".pwa-status");
+  if (await pwaStatus.isVisible()) {
+    await pwaStatus.getByRole("button", { name: "Lukk" }).click();
+  }
+  await page.getByRole("button", { name: "Flere valg" }).click();
+  await page.getByRole("button", { name: "Bytt posisjoner" }).click();
+  const dialog = page.getByRole("dialog", { name: "Bytt posisjoner" });
+  await dialog.getByRole("button", { name: "Keeper: Ada" }).click();
+  await dialog.getByRole("button", { name: /^Spiss: / }).click();
+  await expect(dialog.getByRole("button", { name: "Spiss: Ada" })).toBeVisible();
+  await dialog.getByRole("button", { name: "LAGRE POSISJONER" }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByRole("button", { name: "Bytt ut Ada (Spiss)" })).toBeVisible();
 });

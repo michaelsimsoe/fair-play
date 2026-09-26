@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import seed from "../../public/seed/seed-krokelvdalen-2.json";
 import stormSeed from "../../public/seed/seed-storm-bla-2026-09-12.json";
 import krokelvdalen3Seed from "../../public/seed/seed-krokelvdalen-3-2026-09-26.json";
+import demo5Seed from "../../public/seed/seed-demo-5er.json";
+import demo7Seed from "../../public/seed/seed-demo-7er.json";
 import { projectMatch } from "../domain";
 import { calculateTournamentTotals } from "../features/shared/data";
 import {
@@ -515,6 +517,102 @@ describe("backup and import", () => {
     }
   });
 
+  it("round trips formation, keeper preference, and role assignments", async () => {
+    const tournament = await repository.createTournament({
+      ...tournamentInput,
+      defaultPlayersOnField: 5,
+      defaultFormationId: "5-121",
+      goalkeeperPolicy: "rotating",
+    });
+    const players = await Promise.all(
+      ["Ask", "Ali", "Fredrik", "Lucas", "Kai", "Per"].map((name) =>
+        repository.addPlayer(tournament.id, name),
+      ),
+    );
+    await repository.updatePlayer({
+      ...players[1]!,
+      goalkeeperPreference: "unavailable",
+    });
+    const match = await repository.addMatch(tournament, { formationId: "5-22" });
+    const roles = ["gk", "lb", "rb", "ls", "rs"].map((roleSlotId, index) => ({
+      roleSlotId,
+      playerId: players[index]!.id,
+    }));
+    await database.matches.put({
+      ...match,
+      status: "completed",
+      selectedRoleAssignments: roles,
+    });
+    await database.matchEvents.bulkAdd([
+      {
+        id: crypto.randomUUID(),
+        matchId: match.id,
+        sequence: 0,
+        type: "MATCH_STARTED",
+        elapsedMs: 0,
+        recordedAtWallMs: 1,
+        source: "user",
+        schemaVersion: 1,
+        payload: {
+          starterLineupIds: players.slice(0, 5).map(({ id }) => id),
+          availablePlayerIds: players.map(({ id }) => id),
+          formationId: "5-22",
+          starterRoleAssignments: roles,
+        },
+      },
+      {
+        id: crypto.randomUUID(),
+        matchId: match.id,
+        sequence: 1,
+        type: "SUBSTITUTION_CONFIRMED",
+        elapsedMs: 120_000,
+        recordedAtWallMs: 2,
+        source: "user",
+        schemaVersion: 1,
+        payload: {
+          outgoingPlayerIds: [players[4]!.id],
+          incomingPlayerIds: [players[5]!.id],
+          roleAssignmentsAfter: [
+            ...roles.slice(0, 4),
+            { roleSlotId: "rs", playerId: players[5]!.id },
+          ],
+        },
+      },
+    ]);
+    const backup = await exportBackup(database);
+    const target = new FairPlayDatabase(`fairplay-target-${crypto.randomUUID()}`);
+    await target.open();
+
+    try {
+      await importBackup(backup, "restore", target);
+      const importedTournament = (await target.tournaments.toArray())[0]!;
+      const importedMatch = (await target.matches.toArray())[0]!;
+      const importedAli = await target.players.get(players[1]!.id);
+      const domainEvents = toDomainEvents(
+        (await target.matchEvents.toArray()).sort((a, b) => a.sequence - b.sequence),
+      );
+      expect(importedTournament.defaultFormationId).toBe("5-121");
+      expect(importedTournament.goalkeeperPolicy).toBe("rotating");
+      expect(importedAli?.goalkeeperPreference).toBe("unavailable");
+      expect(importedMatch.formationId).toBe("5-22");
+      expect(importedMatch.selectedRoleAssignments).toEqual(roles);
+      const startedEvent = domainEvents.find((item) => item.type === "MATCH_STARTED");
+      expect(
+        startedEvent?.type === "MATCH_STARTED" && startedEvent.payload.formationId,
+      ).toBe("5-22");
+      const substitution = domainEvents.find(
+        (item) => item.type === "SUBSTITUTION_CONFIRMED",
+      );
+      expect(
+        substitution?.type === "SUBSTITUTION_CONFIRMED" &&
+          substitution.payload.roleAssignmentsAfter?.at(-1)?.playerId,
+      ).toBe(players[5]!.id);
+    } finally {
+      target.close();
+      await target.delete();
+    }
+  });
+
   it("imports a backup as an independently remapped copy", async () => {
     const tournament = await repository.createTournament(tournamentInput);
     const player = await repository.addPlayer(tournament.id, "Ask");
@@ -722,6 +820,26 @@ describe("backup and import", () => {
       },
     ]);
   });
+});
+
+describe("formation demo seeds", () => {
+  it.each([
+    [demo5Seed, 5, "5-121", "fixed", 7],
+    [demo7Seed, 7, "7-231", "rotating", 10],
+  ] as const)(
+    "imports the %#. demo with its format and formation",
+    async (seed, playersOnField, formationId, goalkeeperPolicy, playerCount) => {
+      const tournamentId = await importSeed(JSON.stringify(seed), database);
+      const bundle = await repository.getTournamentBundle(tournamentId);
+      expect(bundle?.tournament).toMatchObject({
+        defaultPlayersOnField: playersOnField,
+        defaultFormationId: formationId,
+        goalkeeperPolicy,
+      });
+      expect(bundle?.players).toHaveLength(playerCount);
+      expect(bundle?.matches[0]?.selectedStarterIds).toHaveLength(playersOnField);
+    },
+  );
 });
 
 describe("schema migration", () => {

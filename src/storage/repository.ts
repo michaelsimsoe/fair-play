@@ -34,6 +34,8 @@ export type CreateTournamentInput = {
   defaultSubstitutionIntervalMs?: number;
   defaultAlertLeadMs: number;
   fairnessScope: "tournament" | "match";
+  defaultFormationId?: string;
+  goalkeeperPolicy?: "fixed" | "rotating";
 };
 
 export type ParticipationPauseRemoval = {
@@ -315,6 +317,7 @@ export class FairPlayRepository {
       plannedDurationMs?: number;
       playersOnField?: number;
       substitutionIntervalMs?: number | null;
+      formationId?: string | null;
     },
   ): Promise<MatchRecord> {
     return this.database.transaction(
@@ -340,6 +343,9 @@ export class FairPlayRepository {
           ...("substitutionIntervalMs" in values
             ? { substitutionIntervalMs: values.substitutionIntervalMs }
             : {}),
+          ...(values.formationId === undefined
+            ? {}
+            : { formationId: values.formationId }),
           alertLeadMs: tournament.defaultAlertLeadMs,
           eligiblePlayerIds: teamPlayers.map((player) => player.id),
           status: "scheduled",
@@ -395,6 +401,7 @@ export class FairPlayRepository {
           updatedAtWallMs: now,
         };
         delete duplicate.selectedStarterIds;
+        delete duplicate.selectedRoleAssignments;
         const pausedPlayerUpdates = allPlayers.map((player) =>
           recomputeParticipationPauses(player, [...matches, duplicate]),
         );

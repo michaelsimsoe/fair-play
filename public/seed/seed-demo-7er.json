@@ -1,0 +1,163 @@
+{
+  "format": "fairplay-sideline-seed",
+  "schemaVersion": 1,
+  "tournament": {
+    "id": "tournament-demo7",
+    "name": "Demo · 7er med roterende keeper",
+    "date": "2026-09-27",
+    "timezone": "Europe/Oslo",
+    "teamName": "Demo 7er",
+    "coachLabel": "Michael",
+    "defaultMatchDurationMs": 1200000,
+    "defaultPlayersOnField": 7,
+    "defaultMinimumStintMs": 60000,
+    "defaultSubstitutionIntervalMs": 240000,
+    "defaultAlertLeadMs": 10000,
+    "fairnessScope": "tournament",
+    "defaultFormationId": "7-231",
+    "goalkeeperPolicy": "rotating"
+  },
+  "players": [
+    {
+      "id": "demo7-player-ask",
+      "name": "Ask",
+      "sortOrder": 0,
+      "active": true,
+      "membership": "team"
+    },
+    {
+      "id": "demo7-player-henrik",
+      "name": "Henrik",
+      "sortOrder": 1,
+      "active": true,
+      "membership": "team"
+    },
+    {
+      "id": "demo7-player-kai",
+      "name": "Kai",
+      "sortOrder": 2,
+      "active": true,
+      "membership": "team"
+    },
+    {
+      "id": "demo7-player-kasper",
+      "name": "Kasper",
+      "sortOrder": 3,
+      "active": true,
+      "membership": "team"
+    },
+    {
+      "id": "demo7-player-fredrik",
+      "name": "Fredrik",
+      "sortOrder": 4,
+      "active": true,
+      "membership": "team"
+    },
+    {
+      "id": "demo7-player-lucas",
+      "name": "Lucas",
+      "sortOrder": 5,
+      "active": true,
+      "membership": "team"
+    },
+    {
+      "id": "demo7-player-ola",
+      "name": "Ola",
+      "sortOrder": 6,
+      "active": true,
+      "membership": "team"
+    },
+    {
+      "id": "demo7-player-per",
+      "name": "Per",
+      "sortOrder": 7,
+      "active": true,
+      "membership": "team"
+    },
+    {
+      "id": "demo7-player-maximilian",
+      "name": "Maximilian",
+      "sortOrder": 8,
+      "active": true,
+      "membership": "team"
+    },
+    {
+      "id": "demo7-player-sofie",
+      "name": "Sofie",
+      "sortOrder": 9,
+      "active": true,
+      "membership": "team"
+    }
+  ],
+  "matches": [
+    {
+      "id": "demo7-match-1",
+      "order": 0,
+      "scheduledStartLocal": "2026-09-27T12:00:00",
+      "opponent": "Tromsdalen",
+      "plannedDurationMs": 1200000,
+      "playersOnField": 7,
+      "eligiblePlayerIds": [
+        "demo7-player-ask",
+        "demo7-player-henrik",
+        "demo7-player-kai",
+        "demo7-player-kasper",
+        "demo7-player-fredrik",
+        "demo7-player-lucas",
+        "demo7-player-ola",
+        "demo7-player-per",
+        "demo7-player-maximilian",
+        "demo7-player-sofie"
+      ]
+    },
+    {
+      "id": "demo7-match-2",
+      "order": 1,
+      "scheduledStartLocal": "2026-09-27T12:40:00",
+      "opponent": "Storm",
+      "plannedDurationMs": 1200000,
+      "playersOnField": 7,
+      "eligiblePlayerIds": [
+        "demo7-player-ask",
+        "demo7-player-henrik",
+        "demo7-player-kai",
+        "demo7-player-kasper",
+        "demo7-player-fredrik",
+        "demo7-player-lucas",
+        "demo7-player-ola",
+        "demo7-player-per",
+        "demo7-player-maximilian",
+        "demo7-player-sofie"
+      ]
+    },
+    {
+      "id": "demo7-match-3",
+      "order": 2,
+      "scheduledStartLocal": "2026-09-27T13:30:00",
+      "opponent": "Fløya",
+      "plannedDurationMs": 1200000,
+      "playersOnField": 7,
+      "eligiblePlayerIds": [
+        "demo7-player-ask",
+        "demo7-player-henrik",
+        "demo7-player-kai",
+        "demo7-player-kasper",
+        "demo7-player-fredrik",
+        "demo7-player-lucas",
+        "demo7-player-ola",
+        "demo7-player-per",
+        "demo7-player-maximilian",
+        "demo7-player-sofie"
+      ]
+    }
+  ],
+  "suggestedFirstMatchStarters": [
+    "demo7-player-ask",
+    "demo7-player-henrik",
+    "demo7-player-kai",
+    "demo7-player-kasper",
+    "demo7-player-fredrik",
+    "demo7-player-lucas",
+    "demo7-player-ola"
+  ]
+}

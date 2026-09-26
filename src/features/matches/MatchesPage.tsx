@@ -11,6 +11,8 @@ import {
   StatusPill,
 } from "../../components/ui";
 import type { MatchRecord } from "../../storage/schema";
+import { effectiveFormation } from "../shared/formation";
+import { MatchFormatFields, parseMatchFormat } from "../shared/MatchFormatFields";
 import { useAsyncData } from "../shared/hooks";
 import { formString } from "../shared/forms";
 import {
@@ -89,13 +91,17 @@ export function MatchesPage({ tournamentId }: { tournamentId: string }) {
     ) {
       throw new Error("Velg en gyldig bytterytme.");
     }
+    const formation = parseMatchFormat(data);
     const values = {
       ...(scheduledStartLocal ? { scheduledStartLocal } : {}),
       ...(opponent ? { opponent } : {}),
       ...(pitch ? { pitch } : {}),
       ...(notes ? { notes } : {}),
       plannedDurationMs: Number(data.get("durationMinutes")) * 60_000,
-      playersOnField: Number(data.get("playersOnField")),
+      playersOnField: formation.playersOnField,
+      ...(formation.formationId === undefined
+        ? {}
+        : { formationId: formation.formationId }),
       ...(rhythmOverride === "inherit"
         ? {}
         : {
@@ -113,6 +119,13 @@ export function MatchesPage({ tournamentId }: { tournamentId: string }) {
         plannedDurationMs: values.plannedDurationMs,
         playersOnField: values.playersOnField,
       };
+      if (formation.formationId === undefined) delete updated.formationId;
+      else updated.formationId = formation.formationId;
+      if (
+        updated.formationId !== editing.formationId ||
+        updated.playersOnField !== editing.playersOnField
+      )
+        delete updated.selectedRoleAssignments;
       if (scheduledStartLocal) updated.scheduledStartLocal = scheduledStartLocal;
       else delete updated.scheduledStartLocal;
       if (opponent) updated.opponent = opponent;
@@ -182,7 +195,11 @@ export function MatchesPage({ tournamentId }: { tournamentId: string }) {
                     <strong>mot {match.opponent || "motstander ikke satt"}</strong>
                     <small>
                       {formatDuration(match.plannedDurationMs)} · {match.playersOnField}{" "}
-                      på banen · {substitutionRhythmLabel(match, bundle.tournament)}
+                      på banen
+                      {effectiveFormation(match, bundle.tournament)
+                        ? ` · ${effectiveFormation(match, bundle.tournament)!.name}`
+                        : ""}{" "}
+                      · {substitutionRhythmLabel(match, bundle.tournament)}
                     </small>
                   </span>
                   <StatusPill
@@ -312,20 +329,19 @@ export function MatchesPage({ tournamentId }: { tournamentId: string }) {
                     }
                   />
                 </Field>
-                <Field label="Spillere på banen">
-                  <input
-                    name="playersOnField"
-                    type="number"
-                    min="1"
-                    required
-                    defaultValue={
-                      editing === "new"
-                        ? bundle.tournament.defaultPlayersOnField
-                        : editing.playersOnField
-                    }
-                  />
-                </Field>
               </div>
+              <MatchFormatFields
+                playersOnField={
+                  editing === "new"
+                    ? bundle.tournament.defaultPlayersOnField
+                    : editing.playersOnField
+                }
+                formationId={editing === "new" ? undefined : editing.formationId}
+                inherit={{
+                  playersOnField: bundle.tournament.defaultPlayersOnField,
+                  formationId: bundle.tournament.defaultFormationId,
+                }}
+              />
               <Field label="Notater">
                 <textarea
                   name="notes"

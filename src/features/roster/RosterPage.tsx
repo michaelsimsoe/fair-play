@@ -3,6 +3,7 @@ import { navigate } from "../../app/router";
 import { useServices } from "../../app/services";
 import { Button, Card, EmptyState, PageHeader } from "../../components/ui";
 import type { PlayerRecord } from "../../storage/schema";
+import { goalkeeperPreferenceOptions } from "../shared/formation";
 import { useAsyncData } from "../shared/hooks";
 import { formString } from "../shared/forms";
 
@@ -51,11 +52,15 @@ export function RosterPage({ tournamentId }: { tournamentId: string }) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     const membership = formString(data, "membership") === "guest" ? "guest" : "team";
+    const goalkeeperPreference = goalkeeperPreferenceOptions.find(
+      (option) => option.value === formString(data, "goalkeeperPreference"),
+    )?.value;
     await run(async () => {
       await repository.updatePlayer({
         ...player,
         name: formString(data, "name"),
         membership,
+        goalkeeperPreference: goalkeeperPreference ?? "willing",
       });
       setEditing(undefined);
     });
@@ -140,6 +145,17 @@ export function RosterPage({ tournamentId }: { tournamentId: string }) {
                       <option value="team">Lagspiller</option>
                       <option value="guest">Gjest</option>
                     </select>
+                    <select
+                      name="goalkeeperPreference"
+                      aria-label={`Keeper for ${player.name}`}
+                      defaultValue={player.goalkeeperPreference ?? "willing"}
+                    >
+                      {goalkeeperPreferenceOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
                     <Button type="submit" variant="primary">
                       Lagre
                     </Button>
@@ -170,6 +186,15 @@ export function RosterPage({ tournamentId }: { tournamentId: string }) {
                       <p className="list-row__meta">
                         {player.membership === "guest" ? "Gjest" : "Lagspiller"} ·{" "}
                         {player.active ? "Aktiv" : "Arkivert"}
+                        {player.goalkeeperPreference &&
+                        player.goalkeeperPreference !== "willing"
+                          ? ` · ${
+                              goalkeeperPreferenceOptions.find(
+                                (option) =>
+                                  option.value === player.goalkeeperPreference,
+                              )!.label
+                            }`
+                          : ""}
                       </p>
                     </div>
                     <div className="roster-row__actions">

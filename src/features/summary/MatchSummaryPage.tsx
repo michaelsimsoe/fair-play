@@ -7,7 +7,13 @@ import {
   formatSignedDuration,
 } from "../../components/format";
 import { Button, Card, PageHeader } from "../../components/ui";
-import { playerId } from "../../domain";
+import {
+  addExposure,
+  playerId,
+  POSITION_FAMILY_LABELS,
+  type PositionExposure,
+  type PositionFamily,
+} from "../../domain";
 import { shareOrDownloadJson } from "../../platform/fileShare";
 import { exportBackup } from "../../storage/backup";
 import type { MatchEventRecord } from "../../storage/schema";
@@ -18,20 +24,46 @@ import {
   playerName,
   projectStoredMatch,
 } from "../shared/data";
+import {
+  calculatePositionExposure,
+  projectStoredRoles,
+  startedFormation,
+} from "../shared/formation";
 import { useAsyncData } from "../shared/hooks";
+
+const FAMILY_ORDER: readonly PositionFamily[] = ["GK", "DEF", "MID", "FWD"];
+
+function exposureText(exposure: PositionExposure, id: string): string | undefined {
+  const families = exposure[playerId(id)];
+  if (!families) return undefined;
+  const parts = FAMILY_ORDER.flatMap((family) =>
+    (families[family] ?? 0) > 0
+      ? [`${POSITION_FAMILY_LABELS[family]} ${formatDuration(families[family]!)}`]
+      : [],
+  );
+  return parts.length ? parts.join(" · ") : undefined;
+}
 
 export function MatchSummaryPage({ matchId }: { matchId: string }) {
   const { repository } = useServices();
   const state = useAsyncData(async () => {
     const data = await loadMatchData(repository, matchId);
-    const priorTotals = await calculateTournamentTotals(
-      repository,
-      data.tournamentBundle,
-      data.match.order,
-    );
+    const [priorTotals, priorExposure] = await Promise.all([
+      calculateTournamentTotals(repository, data.tournamentBundle, data.match.order),
+      calculatePositionExposure(repository, data.tournamentBundle, data.match.order),
+    ]);
+    const formation = startedFormation(data.events);
+    const matchExposure = formation
+      ? projectStoredRoles(formation, data.events).exposureMsByPlayer
+      : undefined;
     return {
       ...data,
       priorTotals,
+      formation,
+      matchExposure,
+      dayExposure: matchExposure
+        ? addExposure(priorExposure, matchExposure)
+        : undefined,
       projection: projectStoredMatch(data.match, data.events),
     };
   }, [repository, matchId]);
@@ -49,6 +81,9 @@ export function MatchSummaryPage({ matchId }: { matchId: string }) {
     tournamentBundle: bundle,
     projection,
     priorTotals,
+    formation,
+    matchExposure,
+    dayExposure,
   } = state.data;
   const nextMatch = bundle.matches.find(
     (candidate) =>
@@ -216,6 +251,14 @@ export function MatchSummaryPage({ matchId }: { matchId: string }) {
                     <span>{formatDuration(ideal)}</span>
                     <span>{formatSignedDuration(balance)}</span>
                   </div>
+                  {matchExposure && exposureText(matchExposure, player.id) && (
+                    <small className="summary-player__positions">
+                      {formation?.name}: {exposureText(matchExposure, player.id)}
+                      {dayExposure && exposureText(dayExposure, player.id)
+                        ? ` (hele dagen: ${exposureText(dayExposure, player.id)})`
+                        : ""}
+                    </small>
+                  )}
                   {player.membership === "team" ? (
                     <small className="summary-player__cumulative">
                       Hele spilldagen:{" "}
@@ -321,7 +364,9 @@ function eventDescription(
             : "ikke tilgjengelig resten av kampen"
       }`;
     case "LINEUP_SYNCHRONIZED":
-      return "Lagoppstilling korrigert";
+      return event.payload.reason === "position-change"
+        ? "Posisjoner byttet"
+        : "Lagoppstilling korrigert";
     case "MATCH_DURATION_CHANGED":
       return `Kamplengde endret til ${formatDuration(event.payload.newDurationMs)}`;
     case "MATCH_ENDED":

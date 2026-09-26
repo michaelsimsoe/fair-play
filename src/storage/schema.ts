@@ -4,6 +4,14 @@ const id = z.string().min(1);
 const milliseconds = z.number().int().nonnegative();
 const wallTime = z.number().int().nonnegative();
 
+export const goalkeeperPreferenceSchema = z.enum([
+  "willing",
+  "prefer-not",
+  "unavailable",
+]);
+export const goalkeeperPolicySchema = z.enum(["fixed", "rotating"]);
+const roleAssignmentSchema = z.object({ roleSlotId: id, playerId: id }).strict();
+
 export const tournamentSchema = z
   .object({
     id,
@@ -18,6 +26,8 @@ export const tournamentSchema = z
     defaultSubstitutionIntervalMs: milliseconds.positive().optional(),
     defaultAlertLeadMs: milliseconds,
     fairnessScope: z.enum(["tournament", "match"]),
+    defaultFormationId: id.optional(),
+    goalkeeperPolicy: goalkeeperPolicySchema.optional(),
     createdAtWallMs: wallTime,
     updatedAtWallMs: wallTime,
     archivedAtWallMs: wallTime.optional(),
@@ -33,6 +43,7 @@ const playerBase = {
   normalizedName: z.string().min(1),
   sortOrder: z.number().int().nonnegative(),
   active: z.boolean(),
+  goalkeeperPreference: goalkeeperPreferenceSchema.optional(),
   explicitUnavailableMatchIds: z.array(id),
   unavailableMatchIds: z.array(id),
   participationPauses: z.array(
@@ -113,6 +124,8 @@ export const matchSchema = z
     alertLeadMs: milliseconds,
     eligiblePlayerIds: z.array(id),
     selectedStarterIds: z.array(id).optional(),
+    formationId: id.nullable().optional(),
+    selectedRoleAssignments: z.array(roleAssignmentSchema).optional(),
     status: matchStatusSchema,
     createdAtWallMs: wallTime,
     updatedAtWallMs: wallTime,
@@ -147,6 +160,8 @@ export const matchEventSchema = z.discriminatedUnion("type", [
           availablePlayerIds: z.array(id),
           plannedDurationMs: milliseconds.optional(),
           playersOnField: z.number().int().positive().optional(),
+          formationId: id.optional(),
+          starterRoleAssignments: z.array(roleAssignmentSchema).optional(),
         })
         .strict(),
     })
@@ -162,6 +177,8 @@ export const matchEventSchema = z.discriminatedUnion("type", [
           lineupBeforeIds: z.array(id).optional(),
           lineupAfterIds: z.array(id).optional(),
           recommendationId: id.optional(),
+          consumesRhythmBoundaryElapsedMs: milliseconds.optional(),
+          roleAssignmentsAfter: z.array(roleAssignmentSchema).optional(),
           fixedRhythmPreview: z
             .array(
               z
@@ -187,6 +204,7 @@ export const matchEventSchema = z.discriminatedUnion("type", [
           lineupBeforeIds: z.array(id).optional(),
           lineupAfterIds: z.array(id),
           reason: z.string().optional(),
+          roleAssignmentsAfter: z.array(roleAssignmentSchema).optional(),
         })
         .strict(),
     })
@@ -401,6 +419,8 @@ export const seedEnvelopeSchema = z
         defaultSubstitutionIntervalMs: milliseconds.positive().optional(),
         defaultAlertLeadMs: milliseconds,
         fairnessScope: z.enum(["tournament", "match"]),
+        defaultFormationId: id.optional(),
+        goalkeeperPolicy: goalkeeperPolicySchema.optional(),
       })
       .strict(),
     players: z.array(
@@ -411,6 +431,7 @@ export const seedEnvelopeSchema = z
           sortOrder: z.number().int().nonnegative(),
           active: z.boolean(),
           membership: playerMembershipSchema.optional(),
+          goalkeeperPreference: goalkeeperPreferenceSchema.optional(),
         })
         .strict(),
     ),
@@ -425,6 +446,7 @@ export const seedEnvelopeSchema = z
           plannedDurationMs: milliseconds.positive(),
           playersOnField: z.number().int().positive(),
           substitutionIntervalMs: milliseconds.positive().nullable().optional(),
+          formationId: id.nullable().optional(),
           eligiblePlayerIds: z.array(id),
         })
         .strict(),

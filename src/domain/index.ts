@@ -1,6 +1,7 @@
 export * from "./allocator";
 export * from "./events";
 export * from "./fairness";
+export * from "./formation";
 export * from "./ids";
 export * from "./planner";
 export * from "./projection";

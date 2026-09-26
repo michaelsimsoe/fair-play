@@ -48,6 +48,10 @@ _Avoid_: Scheduled substitution, automatic substitution
 The fixed grid of automatic recommendation times on the match clock, such as every two minutes at 02:00, 04:00, 06:00, and so on. A delayed confirmation does not move later boundaries, and fairness never creates an automatic off-grid substitution.
 _Avoid_: Stint length, countdown reset
 
+**Taken slot**:
+A rhythm boundary already used by a change made in the second half of the interval before it — an early confirmation, or a manual substitution that brings in the child planned to come in next. The next recommendation moves to the following boundary, and the child who was planned out stays on until then.
+_Avoid_: Skipped substitution, reset
+
 **Welfare change**:
 A coach-initiated substitution outside the fixed rhythm because a child is injured, tired, upset, or otherwise needs attention. It may happen at any time and causes only future player assignments to adapt.
 _Avoid_: Fairness correction, emergency optimization
@@ -71,3 +75,23 @@ _Avoid_: Exact equality, perfect leveling
 **Bench rest**:
 An uninterrupted interval during which an available player is off the field. Its preferred length is 60 seconds, independent of the on-field stint setting, and prevents an ordinary manual substitution from immediately cycling the same player back in.
 _Avoid_: Penalty, timeout
+
+**Game format**:
+The number of players and structural rules used on the field, such as 3-a-side, 5-a-side, or 7-a-side. It determines which formation templates are available but does not define a specific lineup.
+_Avoid_: Formation, team size
+
+**Formation**:
+A named arrangement of on-field role slots, such as 1-2-1 in 5-a-side. It describes the shape of the team, not which players occupy it.
+_Avoid_: Lineup, player list
+
+**Role slot**:
+One place in a formation with a stable responsibility and position family, such as goalkeeper, left defender, or striker. A lineup assigns one player to every occupied role slot.
+_Avoid_: Player position, shirt number
+
+**Position exposure**:
+A player's accumulated participation in a position family during a match or match day. It is a secondary rotation goal after player welfare, valid lineups, and reasonable playing time.
+_Avoid_: Position rating, positional entitlement
+
+**Goalkeeper policy**:
+The coach's rule for goalkeeper participation: one goalkeeper for the match, rotation between matches, or rotation at selected match-clock boundaries. Only willing or eligible players may be assigned.
+_Avoid_: Formation

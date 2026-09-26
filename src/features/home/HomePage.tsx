@@ -9,6 +9,10 @@ import { useAsyncData } from "../shared/hooks";
 
 type HomeData = Awaited<ReturnType<typeof loadHome>>;
 
+/** Formation demos are for trying things out locally, not for the published app. */
+const showDemos =
+  import.meta.env.DEV || ["localhost", "127.0.0.1"].includes(window.location.hostname);
+
 async function loadHome(repository: ReturnType<typeof useServices>["repository"]) {
   const [tournaments, journals, settings] = await Promise.all([
     repository.listTournaments(),
@@ -152,6 +156,33 @@ export function HomePage({ offlineReady }: { offlineReady: boolean }) {
           onChange={(event) => void importFile(event)}
         />
       </div>
+
+      {showDemos && (
+        <Card>
+          <p className="eyebrow">Prøv formasjoner</p>
+          <h2>Demo 5er og 7er</h2>
+          <p className="muted">
+            5er · 1-2-1 med fast keeper, 7 spillere. 7er · 2-3-1 med roterende keeper,
+            10 spillere. Tre kamper hver.
+          </p>
+          <div className="button-row">
+            <Button
+              full
+              disabled={working}
+              onClick={() => void loadBundledMatchDay("seed-demo-5er.json")}
+            >
+              Last inn 5er
+            </Button>
+            <Button
+              full
+              disabled={working}
+              onClick={() => void loadBundledMatchDay("seed-demo-7er.json")}
+            >
+              Last inn 7er
+            </Button>
+          </div>
+        </Card>
+      )}
 
       <Card className="card--accent">
         <p className="eyebrow">Klar spilldag</p>

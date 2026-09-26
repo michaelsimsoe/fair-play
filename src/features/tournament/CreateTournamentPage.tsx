@@ -3,6 +3,11 @@ import { navigate } from "../../app/router";
 import { useServices } from "../../app/services";
 import { Button, Card, Field, PageHeader } from "../../components/ui";
 import { requestStoragePersistence } from "../../platform/storagePersistence";
+import {
+  MatchFormatFields,
+  parseGoalkeeperPolicy,
+  parseMatchFormat,
+} from "../shared/MatchFormatFields";
 import { formString } from "../shared/forms";
 import {
   parseSubstitutionInterval,
@@ -30,6 +35,7 @@ export function CreateTournamentPage() {
       const defaultSubstitutionIntervalMs = parseSubstitutionInterval(
         formString(data, "substitutionRhythm"),
       );
+      const format = parseMatchFormat(data);
       const tournament = await repository.createTournament({
         name: formString(data, "name").trim(),
         date: formString(data, "date"),
@@ -37,11 +43,13 @@ export function CreateTournamentPage() {
         teamName: formString(data, "teamName").trim(),
         ...(coachLabel ? { coachLabel } : {}),
         defaultMatchDurationMs: Number(data.get("durationMinutes") ?? 12) * 60_000,
-        defaultPlayersOnField: Number(data.get("playersOnField") ?? 3),
+        defaultPlayersOnField: format.playersOnField,
         defaultMinimumStintMs: Number(data.get("minimumStint") ?? 60) * 1000,
         ...(defaultSubstitutionIntervalMs ? { defaultSubstitutionIntervalMs } : {}),
         defaultAlertLeadMs: Number(data.get("alertLead") ?? 10) * 1000,
         fairnessScope: "tournament",
+        ...(format.formationId ? { defaultFormationId: format.formationId } : {}),
+        goalkeeperPolicy: parseGoalkeeperPolicy(formString(data, "goalkeeperPolicy")),
       });
       void requestStoragePersistence();
       navigate({ name: "roster", tournamentId: tournament.id });
@@ -80,6 +88,7 @@ export function CreateTournamentPage() {
           <Field label="Trener (valgfritt)">
             <input name="coachLabel" autoComplete="name" />
           </Field>
+          <MatchFormatFields playersOnField={3} formationId="3-21" policy="fixed" />
           <div className="form-grid form-grid--two">
             <Field label="Kamplengde (minutter)">
               <input
@@ -89,16 +98,6 @@ export function CreateTournamentPage() {
                 max="180"
                 required
                 defaultValue="12"
-              />
-            </Field>
-            <Field label="Spillere på banen">
-              <input
-                name="playersOnField"
-                type="number"
-                min="1"
-                max="20"
-                required
-                defaultValue="3"
               />
             </Field>
             <Field label="Ønsket minste periode (sek)">
@@ -133,6 +132,7 @@ export function CreateTournamentPage() {
               </select>
             </Field>
           </div>
+
           {error && (
             <div className="notice" role="alert">
               {error}

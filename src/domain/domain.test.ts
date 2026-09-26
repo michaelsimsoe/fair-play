@@ -2,7 +2,7 @@ import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { allocateCappedCapacity, allocateRemaining } from "./allocator";
 import { type MatchEvent } from "./events";
-import { playerId, matchEventId, matchId } from "./ids";
+import { playerId, matchEventId, matchId, type PlayerId } from "./ids";
 import { planMatch } from "./planner";
 import { projectMatch } from "./projection";
 import type { MatchConfiguration } from "./types";
@@ -575,6 +575,50 @@ describe("planner", () => {
     });
   });
 
+  it("lets a late manual change with the planned incoming child take that rhythm slot", () => {
+    const ids = ["p1", "p2", "p3", "p4", "p5"].map(playerId);
+    const [p1, p2, p3, p4, p5] = ids as [
+      PlayerId,
+      PlayerId,
+      PlayerId,
+      PlayerId,
+      PlayerId,
+    ];
+    const base = {
+      nowElapsedMs: 110_000,
+      plannedEndElapsedMs: 720_000,
+      fieldSlots: 3,
+      orderedAvailablePlayerIds: ids,
+      currentLineupIds: [p1, p3, p4],
+      balancesMsByPlayer: {
+        [p1]: 44_000,
+        [p2]: 44_000,
+        [p3]: 44_000,
+        [p4]: -66_000,
+        [p5]: -66_000,
+      },
+      currentFieldStintMsByPlayer: { [p1]: 110_000, [p3]: 110_000, [p4]: 0 },
+      currentBenchStintMsByPlayer: { [p2]: 0, [p5]: 110_000 },
+      actualMsByPlayer: { [p1]: 110_000, [p2]: 110_000, [p3]: 110_000 },
+      minimumPreferredStintMs: 60_000,
+      fixedSubstitutionRhythmMs: 120_000,
+      manualDeviation: true,
+    };
+
+    expect(planMatch(base).recommendation?.dueAtElapsedMs).toBe(120_000);
+
+    const result = planMatch({ ...base, consumedRhythmBoundaryElapsedMs: 120_000 });
+    expect(result.recommendation?.dueAtElapsedMs).toBe(240_000);
+    const swap = result.recommendation?.swaps[0];
+    expect(swap?.incomingPlayerId).toBe(p5);
+    expect([p1, p3]).toContain(swap?.outgoingPlayerId);
+    expect(result.preview.map((step) => step.dueAtElapsedMs)).toEqual([
+      240_000, 360_000, 480_000, 600_000,
+    ]);
+    const plannedIntervals =
+      result.diagnostics.fixedRhythm?.plannedIntervalCountByPlayer;
+    expect(plannedIntervals?.[p2]).toBeGreaterThan(0);
+  });
   it("uses the child-first cyclic ring for equal five-player fixed rhythms", () => {
     const ask = playerId("Ask");
     const henrik = playerId("Henrik");

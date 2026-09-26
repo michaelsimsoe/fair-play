@@ -1,0 +1,131 @@
+{
+  "format": "fairplay-sideline-seed",
+  "schemaVersion": 1,
+  "tournament": {
+    "id": "tournament-demo5",
+    "name": "Demo · 5er med fast keeper",
+    "date": "2026-09-27",
+    "timezone": "Europe/Oslo",
+    "teamName": "Demo 5er",
+    "coachLabel": "Michael",
+    "defaultMatchDurationMs": 900000,
+    "defaultPlayersOnField": 5,
+    "defaultMinimumStintMs": 60000,
+    "defaultSubstitutionIntervalMs": 180000,
+    "defaultAlertLeadMs": 10000,
+    "fairnessScope": "tournament",
+    "defaultFormationId": "5-121",
+    "goalkeeperPolicy": "fixed"
+  },
+  "players": [
+    {
+      "id": "demo5-player-ada",
+      "name": "Ada",
+      "sortOrder": 0,
+      "active": true,
+      "membership": "team"
+    },
+    {
+      "id": "demo5-player-bo",
+      "name": "Bo",
+      "sortOrder": 1,
+      "active": true,
+      "membership": "team"
+    },
+    {
+      "id": "demo5-player-cy",
+      "name": "Cy",
+      "sortOrder": 2,
+      "active": true,
+      "membership": "team"
+    },
+    {
+      "id": "demo5-player-dina",
+      "name": "Dina",
+      "sortOrder": 3,
+      "active": true,
+      "membership": "team"
+    },
+    {
+      "id": "demo5-player-emil",
+      "name": "Emil",
+      "sortOrder": 4,
+      "active": true,
+      "membership": "team"
+    },
+    {
+      "id": "demo5-player-frida",
+      "name": "Frida",
+      "sortOrder": 5,
+      "active": true,
+      "membership": "team"
+    },
+    {
+      "id": "demo5-player-gustav",
+      "name": "Gustav",
+      "sortOrder": 6,
+      "active": true,
+      "membership": "team"
+    }
+  ],
+  "matches": [
+    {
+      "id": "demo5-match-1",
+      "order": 0,
+      "scheduledStartLocal": "2026-09-27T10:00:00",
+      "opponent": "Reinen",
+      "plannedDurationMs": 900000,
+      "playersOnField": 5,
+      "eligiblePlayerIds": [
+        "demo5-player-ada",
+        "demo5-player-bo",
+        "demo5-player-cy",
+        "demo5-player-dina",
+        "demo5-player-emil",
+        "demo5-player-frida",
+        "demo5-player-gustav"
+      ]
+    },
+    {
+      "id": "demo5-match-2",
+      "order": 1,
+      "scheduledStartLocal": "2026-09-27T10:30:00",
+      "opponent": "Ulfstind",
+      "plannedDurationMs": 900000,
+      "playersOnField": 5,
+      "eligiblePlayerIds": [
+        "demo5-player-ada",
+        "demo5-player-bo",
+        "demo5-player-cy",
+        "demo5-player-dina",
+        "demo5-player-emil",
+        "demo5-player-frida",
+        "demo5-player-gustav"
+      ]
+    },
+    {
+      "id": "demo5-match-3",
+      "order": 2,
+      "scheduledStartLocal": "2026-09-27T11:15:00",
+      "opponent": "Laksvatn",
+      "plannedDurationMs": 900000,
+      "playersOnField": 5,
+      "eligiblePlayerIds": [
+        "demo5-player-ada",
+        "demo5-player-bo",
+        "demo5-player-cy",
+        "demo5-player-dina",
+        "demo5-player-emil",
+        "demo5-player-frida",
+        "demo5-player-gustav"
+      ]
+    }
+  ],
+  "suggestedFirstMatchStarters": [
+    "demo5-player-ada",
+    "demo5-player-bo",
+    "demo5-player-cy",
+    "demo5-player-dina",
+    "demo5-player-emil"
+  ]
+}

@@ -58,6 +58,12 @@ export type PlannerInput = Readonly<{
    */
   fixedSubstitutionRhythmMs?: number;
   /**
+   * A fixed-rhythm boundary already used by a change made shortly before it,
+   * such as an early confirmation or a manual change with the planned incoming
+   * child. The next recommendation moves to the following boundary.
+   */
+  consumedRhythmBoundaryElapsedMs?: number;
+  /**
    * The last full fixed-rhythm preview. Supplying it lets a delayed suggested
    * confirmation retain its already communicated future rotation where the
    * actual lineup still permits it.
@@ -68,6 +74,8 @@ export type PlannerInput = Readonly<{
   idealMsByPlayer?: Readonly<Record<PlayerId, number>>;
   availabilityChanged?: boolean;
   manualDeviation?: boolean;
+  /** Players who stay on the field outside the automatic rotation. */
+  lockedOnFieldPlayerIds?: readonly PlayerId[];
 }>;
 
 export type PlannerPreviewStep = Readonly<{
@@ -646,10 +654,16 @@ function fixedRhythmPlan(
 ): PlannerResult | undefined {
   const rhythm = fixedSubstitutionRhythm(input);
   const remaining = input.plannedEndElapsedMs - input.nowElapsedMs;
-  const nextBoundary =
+  const gridBoundary =
     rhythm === undefined
       ? undefined
       : (Math.floor(input.nowElapsedMs / rhythm) + 1) * rhythm;
+  const nextBoundary =
+    rhythm !== undefined &&
+    gridBoundary !== undefined &&
+    input.consumedRhythmBoundaryElapsedMs === gridBoundary
+      ? gridBoundary + rhythm
+      : gridBoundary;
   if (
     rhythm === undefined ||
     remaining <= 0 ||
@@ -693,7 +707,8 @@ function fixedRhythmPlan(
     };
   }
 
-  const intervalCount = Math.ceil(remaining / rhythm);
+  const intervalCount =
+    1 + Math.ceil((input.plannedEndElapsedMs - nextBoundary) / rhythm);
   const intervalDuration = (interval: number) =>
     interval === 0
       ? nextBoundary - input.nowElapsedMs
@@ -981,7 +996,56 @@ function fixedRhythmPlan(
   };
 }
 
+/**
+ * Locked players (for example a keeper kept for the whole match) stay on the
+ * field and outside the rotation. The rotation is planned for the remaining
+ * slots and the locked players are added back to every previewed lineup.
+ */
 export function planMatch(input: PlannerInput): PlannerResult {
+  const locked = (input.lockedOnFieldPlayerIds ?? []).filter(
+    (id, index, all) =>
+      all.indexOf(id) === index &&
+      input.currentLineupIds.includes(id) &&
+      input.orderedAvailablePlayerIds.includes(id),
+  );
+  if (locked.length === 0) return planRotation(input);
+  const lockedSet = new Set(locked);
+  const strip = (ids: readonly PlayerId[]) => ids.filter((id) => !lockedSet.has(id));
+  const restore = (ids: readonly PlayerId[]) => [...locked, ...strip(ids)];
+  const inner = planRotation({
+    ...input,
+    fieldSlots: input.fieldSlots - locked.length,
+    orderedAvailablePlayerIds: strip(input.orderedAvailablePlayerIds),
+    currentLineupIds: strip(input.currentLineupIds),
+    lockedOnFieldPlayerIds: [],
+    ...(input.previousPreview
+      ? {
+          previousPreview: input.previousPreview
+            .map((step) => ({
+              ...step,
+              lineupBeforeIds: strip(step.lineupBeforeIds),
+              lineupAfterIds: strip(step.lineupAfterIds),
+              swaps: step.swaps.filter(
+                (swap) =>
+                  !lockedSet.has(swap.outgoingPlayerId) &&
+                  !lockedSet.has(swap.incomingPlayerId),
+              ),
+            }))
+            .filter((step) => step.swaps.length > 0),
+        }
+      : {}),
+  });
+  return {
+    ...inner,
+    preview: inner.preview.map((step) => ({
+      ...step,
+      lineupBeforeIds: restore(step.lineupBeforeIds),
+      lineupAfterIds: restore(step.lineupAfterIds),
+    })),
+  };
+}
+
+function planRotation(input: PlannerInput): PlannerResult {
   const ids = [...input.orderedAvailablePlayerIds];
   const remaining = input.plannedEndElapsedMs - input.nowElapsedMs;
   const currentMatch = matchTotals(input, ids);

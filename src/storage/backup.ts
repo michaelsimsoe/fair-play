@@ -15,7 +15,7 @@ import {
   type TournamentRecord,
 } from "./schema";
 
-const APP_VERSION = "1.4.0";
+const APP_VERSION = "1.5.0";
 
 export class ImportValidationError extends Error {
   constructor(

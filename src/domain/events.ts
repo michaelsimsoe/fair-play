@@ -27,6 +27,8 @@ export type EventEnvelope<T extends MatchEventType, P> = Readonly<{
   payload: P;
 }>;
 
+export type RoleAssignment = Readonly<{ roleSlotId: string; playerId: PlayerId }>;
+
 export type MatchStartedEvent = EventEnvelope<
   "MATCH_STARTED",
   {
@@ -34,6 +36,8 @@ export type MatchStartedEvent = EventEnvelope<
     availablePlayerIds: readonly PlayerId[];
     plannedDurationMs?: number;
     playersOnField?: number;
+    formationId?: string;
+    starterRoleAssignments?: readonly RoleAssignment[];
   }
 >;
 export type SubstitutionConfirmedEvent = EventEnvelope<
@@ -44,6 +48,7 @@ export type SubstitutionConfirmedEvent = EventEnvelope<
     lineupBeforeIds?: readonly PlayerId[];
     lineupAfterIds?: readonly PlayerId[];
     recommendationId?: string;
+    roleAssignmentsAfter?: readonly RoleAssignment[];
   }
 >;
 export type LineupSynchronizedEvent = EventEnvelope<
@@ -52,6 +57,7 @@ export type LineupSynchronizedEvent = EventEnvelope<
     lineupBeforeIds?: readonly PlayerId[];
     lineupAfterIds: readonly PlayerId[];
     reason?: string;
+    roleAssignmentsAfter?: readonly RoleAssignment[];
   }
 >;
 export type PlayerAvailabilityChangedEvent = EventEnvelope<

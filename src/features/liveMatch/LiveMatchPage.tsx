@@ -20,10 +20,16 @@ import {
   DEFAULT_COMPENSATION_TOLERANCE_MS,
   DEFAULT_MINIMUM_BENCH_REST_MS,
   DEFAULT_RETURN_COMPENSATION_CAP_MS,
+  addExposure,
+  goalkeeperSlot,
   planMatch,
   playerId,
+  rolesAfterSubstitution,
+  roleSlotById,
+  swapRoles,
   type PlannerPreviewStep,
   type PlayerId,
+  type RoleAssignment,
 } from "../../domain";
 import { browserClockSource } from "../../platform/browserClockSource";
 import { vibrateForChange } from "../../platform/vibration";
@@ -45,7 +51,17 @@ import {
   playerName,
   projectStoredMatch,
 } from "../shared/data";
+import {
+  calculatePositionExposure,
+  describeMoves,
+  goalkeeperPolicy,
+  goalkeeperPreferences,
+  projectStoredRoles,
+  startedFormation,
+  toRoleAssignmentRecords,
+} from "../shared/formation";
 import { useAsyncData } from "../shared/hooks";
+import { Pitch } from "../shared/Pitch";
 import {
   participationPauseMatchIds,
   type ParticipationPauseScope,
@@ -55,6 +71,7 @@ import { effectiveSubstitutionInterval } from "../shared/substitutionRhythm";
 type LoadedLiveData = Awaited<ReturnType<typeof loadMatchData>> & {
   journal: ActiveMatchJournalRecord | undefined;
   priorTotals: Awaited<ReturnType<typeof calculateTournamentTotals>>;
+  priorExposure: Awaited<ReturnType<typeof calculatePositionExposure>>;
   settings: AppSettingsRecord;
 };
 
@@ -95,12 +112,13 @@ export function LiveMatchPage({ matchId }: { matchId: string }) {
   const { repository } = useServices();
   const state = useAsyncData<LoadedLiveData>(async () => {
     const data = await loadMatchData(repository, matchId);
-    const [journal, priorTotals, settings] = await Promise.all([
+    const [journal, priorTotals, priorExposure, settings] = await Promise.all([
       repository.getJournal(matchId),
       calculateTournamentTotals(repository, data.tournamentBundle, data.match.order),
+      calculatePositionExposure(repository, data.tournamentBundle, data.match.order),
       repository.getSettings(),
     ]);
-    return { ...data, journal, priorTotals, settings };
+    return { ...data, journal, priorTotals, priorExposure, settings };
   }, [repository, matchId]);
 
   if (state.status === "loading") {
@@ -191,6 +209,8 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
     untilElapsedMs: number;
   }>();
   const [projectionOpen, setProjectionOpen] = useState(false);
+  const [positionDraft, setPositionDraft] = useState<RoleAssignment[]>();
+  const [positionPick, setPositionPick] = useState<string>();
   const [toolsOpen, setToolsOpen] = useState(false);
   const [availabilityAction, setAvailabilityAction] = useState<{
     playerId: string;
@@ -219,6 +239,39 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
     () => projectStoredMatch(match, events, planningElapsedMs),
     [match, events, planningElapsedMs],
   );
+  const formation = useMemo(() => startedFormation(events), [events]);
+  const currentRoles = useMemo(
+    () => (formation ? projectStoredRoles(formation, events, elapsedMs) : undefined),
+    [formation, events, elapsedMs],
+  );
+  const roleAssignments = useMemo(
+    () => currentRoles?.assignments ?? [],
+    [currentRoles],
+  );
+  const goalkeeperContext = {
+    goalkeeperPreferenceByPlayer: goalkeeperPreferences(players),
+    exposure: addExposure(data.priorExposure, currentRoles?.exposureMsByPlayer ?? {}),
+  };
+  const keeperRoleSlot = formation ? goalkeeperSlot(formation) : undefined;
+  const keeperId = keeperRoleSlot
+    ? roleAssignments.find((assignment) => assignment.roleSlotId === keeperRoleSlot.id)
+        ?.playerId
+    : undefined;
+  const lockedKeeperId =
+    goalkeeperPolicy(bundle.tournament) === "fixed" ? keeperId : undefined;
+  const rolesAfter = (
+    swaps: readonly { outgoingPlayerId: PlayerId; incomingPlayerId: PlayerId }[],
+    assignments: readonly RoleAssignment[] = roleAssignments,
+  ) =>
+    formation
+      ? rolesAfterSubstitution(formation, assignments, swaps, goalkeeperContext)
+      : undefined;
+  const roleLabel = (id: string, assignments: readonly RoleAssignment[]) => {
+    const assignment = assignments.find((candidate) => candidate.playerId === id);
+    return formation && assignment
+      ? roleSlotById(formation, assignment.roleSlotId)?.label
+      : undefined;
+  };
 
   const planningResult = useMemo(() => {
     const availableIds = players
@@ -318,6 +371,15 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
             "LINEUP_SYNCHRONIZED",
           ].includes(event.type),
       );
+    const latestSubstitution = [...events]
+      .reverse()
+      .find(
+        (event) => !voidedIds.has(event.id) && event.type === "SUBSTITUTION_CONFIRMED",
+      );
+    const consumedRhythmBoundaryElapsedMs =
+      latestSubstitution?.type === "SUBSTITUTION_CONFIRMED"
+        ? latestSubstitution.payload.consumesRhythmBoundaryElapsedMs
+        : undefined;
     const fixedSubstitutionRhythmMs = effectiveSubstitutionInterval(
       match,
       bundle.tournament,
@@ -326,6 +388,7 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
       nowElapsedMs: planningElapsedMs,
       plannedEndElapsedMs: match.plannedDurationMs,
       fieldSlots: match.playersOnField,
+      ...(lockedKeeperId ? { lockedOnFieldPlayerIds: [lockedKeeperId] } : {}),
       orderedAvailablePlayerIds: availableIds,
       currentLineupIds: planningProjection.currentLineupIds,
       balancesMsByPlayer: balances,
@@ -344,6 +407,9 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
       minimumPreferredBenchRestMs: DEFAULT_MINIMUM_BENCH_REST_MS,
       compensationToleranceMs: DEFAULT_COMPENSATION_TOLERANCE_MS,
       ...(fixedSubstitutionRhythmMs ? { fixedSubstitutionRhythmMs } : {}),
+      ...(consumedRhythmBoundaryElapsedMs !== undefined
+        ? { consumedRhythmBoundaryElapsedMs }
+        : {}),
       previousPreview,
       preferredChangeIntervalMs: Math.floor(
         match.plannedDurationMs / availableIds.length,
@@ -364,6 +430,7 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
     priorTotals,
     events,
     previousPreview,
+    lockedKeeperId,
   ]);
   const recommendation = planningResult?.recommendation;
 
@@ -495,6 +562,40 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
 
   const nextSequence = () => (events.at(-1)?.sequence ?? -1) + 1;
 
+  const roleFacts = (
+    swaps: readonly { outgoingPlayerId: PlayerId; incomingPlayerId: PlayerId }[],
+  ) => {
+    const change = rolesAfter(swaps);
+    return change
+      ? { roleAssignmentsAfter: toRoleAssignmentRecords(change.assignments) }
+      : {};
+  };
+
+  const savePositions = async (assignments: readonly RoleAssignment[]) => {
+    const actionElapsed = clockRef.current.elapsedMs();
+    const currentProjection = projectStoredMatch(match, events, actionElapsed);
+    const event: MatchEventRecord = {
+      id: crypto.randomUUID(),
+      matchId: match.id,
+      sequence: nextSequence(),
+      type: "LINEUP_SYNCHRONIZED",
+      elapsedMs: actionElapsed,
+      recordedAtWallMs: browserClockSource.wallNowMs(),
+      source: "user",
+      schemaVersion: 1,
+      payload: {
+        lineupBeforeIds: [...currentProjection.currentLineupIds],
+        lineupAfterIds: [...currentProjection.currentLineupIds],
+        reason: "position-change",
+        roleAssignmentsAfter: toRoleAssignmentRecords(assignments),
+      },
+    };
+    if (await commit(event, match, currentProjection.currentLineupIds, actionElapsed)) {
+      setPositionDraft(undefined);
+      setPositionPick(undefined);
+    }
+  };
+
   const commit = async (
     newEvents: MatchEventRecord | readonly MatchEventRecord[],
     nextMatch: MatchRecord,
@@ -570,6 +671,10 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
         lineupBeforeIds: [...currentProjection.currentLineupIds],
         lineupAfterIds: lineupAfter,
         recommendationId: recommendation.id,
+        ...(recommendation.dueAtElapsedMs > actionElapsed
+          ? { consumesRhythmBoundaryElapsedMs: recommendation.dueAtElapsedMs }
+          : {}),
+        ...roleFacts(swaps),
         fixedRhythmPreview: planningResult?.preview.map((step) => ({
           dueAtElapsedMs: step.dueAtElapsedMs,
           lineupBeforeIds: step.lineupBeforeIds.map(String),
@@ -584,10 +689,31 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
     await commit(event, match, lineupAfter, actionElapsed);
   };
 
+  /*
+   * A manual change late in a fixed-rhythm interval that brings in the child
+   * planned to come in next takes that planned slot, instead of triggering
+   * another change a few seconds later.
+   */
+  const manualConsumedBoundary = (
+    incoming: string | undefined,
+    atElapsedMs: number,
+  ): number | undefined => {
+    const rhythm = effectiveSubstitutionInterval(match, bundle.tournament);
+    if (!rhythm || !recommendation || incoming === undefined) return undefined;
+    const dueAt = recommendation.dueAtElapsedMs;
+    if (dueAt <= atElapsedMs || dueAt - atElapsedMs > rhythm / 2) return undefined;
+    return recommendation.swaps.some(
+      (swap) => String(swap.incomingPlayerId) === incoming,
+    )
+      ? dueAt
+      : undefined;
+  };
+
   const confirmManual = async () => {
     if (!manualOutgoing || !manualIncoming) return;
     setPreviousPreview([]);
     const actionElapsed = clockRef.current.elapsedMs();
+    const consumedBoundary = manualConsumedBoundary(manualIncoming, actionElapsed);
     const currentProjection = projectStoredMatch(match, events, actionElapsed);
     const lineupAfter = currentProjection.currentLineupIds.map((id) =>
       id === manualOutgoing ? manualIncoming : id,
@@ -607,6 +733,15 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
         incomingPlayerIds: [manualIncoming],
         lineupBeforeIds: [...currentProjection.currentLineupIds],
         lineupAfterIds: lineupAfter,
+        ...(consumedBoundary !== undefined
+          ? { consumesRhythmBoundaryElapsedMs: consumedBoundary }
+          : {}),
+        ...roleFacts([
+          {
+            outgoingPlayerId: playerId(manualOutgoing),
+            incomingPlayerId: playerId(manualIncoming),
+          },
+        ]),
       },
     };
     const manualEvents: MatchEventRecord[] = [substitution];
@@ -832,6 +967,12 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
         incomingPlayerIds: [availabilityAction.incomingId],
         lineupBeforeIds: [...currentProjection.currentLineupIds],
         lineupAfterIds: lineupAfter,
+        ...roleFacts([
+          {
+            outgoingPlayerId: playerId(availabilityAction.playerId),
+            incomingPlayerId: playerId(availabilityAction.incomingId),
+          },
+        ]),
       },
     };
     const availability: MatchEventRecord = {
@@ -1231,9 +1372,41 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
       : "Innenfor planen";
   const showFairnessStatus =
     Boolean(recommendation?.diagnostics.fixedRhythm) || hasProjectedDifference;
-  const fieldPlayers = players.filter((player) =>
-    projection.currentLineupIds.includes(playerId(player.id)),
-  );
+  const slotOrder = (id: string) => {
+    const assignment = roleAssignments.find((candidate) => candidate.playerId === id);
+    return formation && assignment
+      ? formation.slots.findIndex((candidate) => candidate.id === assignment.roleSlotId)
+      : 0;
+  };
+  const fieldPlayers = players
+    .filter((player) => projection.currentLineupIds.includes(playerId(player.id)))
+    .sort((left, right) => slotOrder(left.id) - slotOrder(right.id));
+  const recommendedRoles = recommendation
+    ? rolesAfter(recommendation.swaps)
+    : undefined;
+  const recommendedRoleText =
+    formation && recommendedRoles?.moves.length
+      ? describeMoves(formation, recommendedRoles.moves, players).join(" · ")
+      : undefined;
+  const manualRoleText =
+    formation && manualOutgoing && manualIncoming
+      ? (() => {
+          const change = rolesAfter([
+            {
+              outgoingPlayerId: playerId(manualOutgoing),
+              incomingPlayerId: playerId(manualIncoming),
+            },
+          ]);
+          if (!change) return undefined;
+          const label = roleLabel(manualIncoming, change.assignments);
+          return [
+            `${playerName(players, manualIncoming)} tar plassen som ${
+              label?.toLocaleLowerCase("nb-NO") ?? "ledig plass"
+            }`,
+            ...describeMoves(formation, change.moves, players),
+          ].join(" · ");
+        })()
+      : undefined;
   const benchPlayers = players.filter(
     (player) =>
       projection.currentlyAvailableIds.includes(playerId(player.id)) &&
@@ -1258,7 +1431,19 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
   };
   const openManual = (outgoing?: string) => {
     setManualOutgoing(outgoing);
-    setManualIncoming(benchPlayers.length === 1 ? benchPlayers[0]?.id : undefined);
+    const benchIds = benchPlayers.map((player) => player.id);
+    const planned =
+      recommendation?.swaps.find(
+        (swap) => String(swap.outgoingPlayerId) === outgoing,
+      ) ?? recommendation?.swaps[0];
+    const plannedIncoming = planned ? String(planned.incomingPlayerId) : undefined;
+    setManualIncoming(
+      plannedIncoming && benchIds.includes(plannedIncoming)
+        ? plannedIncoming
+        : benchIds.length === 1
+          ? benchIds[0]
+          : undefined,
+    );
     setManualPauseScope("none");
     setManualBalanceTreatment("preserve");
     setManualReason("ordinary");
@@ -1269,7 +1454,7 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
     <main
       className={`live-page ${preparing ? "live-page--prepare" : ""} ${
         alertDue ? "live-page--due" : ""
-      }`}
+      } ${formation ? "live-page--pitch" : ""}`}
     >
       <header className="live-header">
         <div>
@@ -1351,7 +1536,13 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
                 <span>UT</span>
               </strong>
             </div>
-            {planningResult?.preview[1] && (
+            {recommendedRoleText && <p className="swap-roles">{recommendedRoleText}</p>}
+            {recommendedRoles?.goalkeeperWarning && (
+              <p className="swap-roles swap-roles--warning">
+                Ingen på banen kan stå i mål – velg keeper under «Flere valg».
+              </p>
+            )}
+            {planningResult?.preview[1] && !(formation && alertDue) && (
               <p className="following-change">
                 Deretter {formatDuration(planningResult.preview[1].dueAtElapsedMs)} ·{" "}
                 {planningResult.preview[1].swaps
@@ -1376,58 +1567,64 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
           </div>
         )}
 
-        {recommendation && showFairnessStatus && (
-          <button
-            type="button"
-            className="projection-summary"
-            onClick={() => setProjectionOpen(true)}
-          >
-            <span>Prognose</span>
-            <strong>{fairnessStatus}</strong>
-            <span>Se detaljer</span>
-          </button>
-        )}
+        {recommendation &&
+          showFairnessStatus &&
+          !(formation && (alertDue || fairnessStatus === "Innenfor planen")) && (
+            <button
+              type="button"
+              className="projection-summary"
+              onClick={() => setProjectionOpen(true)}
+            >
+              <span>Prognose</span>
+              <strong>{fairnessStatus}</strong>
+              <span>Se detaljer</span>
+            </button>
+          )}
 
-        {elapsedMs >= match.plannedDurationMs ? (
-          <Button
-            className="confirm-swap"
-            variant="primary"
-            full
-            disabled={saveState === "saving"}
-            onClick={() => void endMatch()}
-          >
-            AVSLUTT KAMP
-          </Button>
-        ) : (
-          <Button
-            className="confirm-swap"
-            variant="primary"
-            full
-            disabled={!firstSwap || match.status === "paused" || saveState === "saving"}
-            onClick={() => void confirmRecommendation()}
-          >
-            BYTTET ER GJORT
-          </Button>
-        )}
-        {due && (
-          <Button
-            className="wait-button"
-            variant="secondary"
-            full
-            disabled={match.status === "paused" || saveState === "saving"}
-            onClick={() =>
-              waiting
-                ? setSnooze(undefined)
-                : recommendation &&
-                  setSnooze({
-                    recommendationId: recommendation.id,
-                    untilElapsedMs: elapsedMs + 20_000,
-                  })
-            }
-          >
-            {waiting ? "VIS BYTTET NÅ" : "VENT 20 SEK"}
-          </Button>
-        )}
+        <div className="live-confirm">
+          {elapsedMs >= match.plannedDurationMs ? (
+            <Button
+              className="confirm-swap"
+              variant="primary"
+              full
+              disabled={saveState === "saving"}
+              onClick={() => void endMatch()}
+            >
+              AVSLUTT KAMP
+            </Button>
+          ) : (
+            <Button
+              className="confirm-swap"
+              variant="primary"
+              full
+              disabled={
+                !firstSwap || match.status === "paused" || saveState === "saving"
+              }
+              onClick={() => void confirmRecommendation()}
+            >
+              BYTTET ER GJORT
+            </Button>
+          )}
+          {due && (
+            <Button
+              className="wait-button"
+              variant="secondary"
+              full
+              disabled={match.status === "paused" || saveState === "saving"}
+              onClick={() =>
+                waiting
+                  ? setSnooze(undefined)
+                  : recommendation &&
+                    setSnooze({
+                      recommendationId: recommendation.id,
+                      untilElapsedMs: elapsedMs + 20_000,
+                    })
+              }
+            >
+              {waiting ? "VIS BYTTET NÅ" : "VENT 20 SEK"}
+            </Button>
+          )}
+        </div>
       </section>
 
       {error && (
@@ -1436,26 +1633,61 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
         </div>
       )}
 
-      <section className="live-lineups">
+      <section className={`live-lineups ${formation ? "live-lineups--pitch" : ""}`}>
         <div>
           <h2>
             På banen <span>Trykk spiller for bytte</span>
           </h2>
-          <div className="player-grid">
-            {fieldPlayers.map((player) => (
-              <PlayerCard
-                key={player.id}
-                player={player}
-                state="field"
-                actualMs={projection.actualMsByPlayer[playerId(player.id)] ?? 0}
-                intervalMs={currentIntervalDuration(
-                  projection.playingStintsByPlayer[playerId(player.id)],
-                  elapsedMs,
-                )}
-                onSelect={() => openManual(player.id)}
-              />
-            ))}
-          </div>
+          {formation ? (
+            <Pitch
+              variant="live"
+              formation={formation}
+              assignments={roleAssignments}
+              players={players}
+              label="På banen"
+              highlightedPlayerIds={
+                recommendation
+                  ? recommendation.swaps.map((swap) => swap.outgoingPlayerId)
+                  : []
+              }
+              incomingNameByPlayerId={
+                recommendation && (due || preparing)
+                  ? Object.fromEntries(
+                      recommendation.swaps.map((swap) => [
+                        swap.outgoingPlayerId,
+                        playerName(players, swap.incomingPlayerId),
+                      ]),
+                    )
+                  : {}
+              }
+              slotLabel={(roleSlot, name, id) =>
+                id ? `Bytt ut ${name} (${roleSlot.label})` : `${roleSlot.label}: ledig`
+              }
+              onSlotPress={(roleSlotId) => {
+                const occupant = roleAssignments.find(
+                  (assignment) => assignment.roleSlotId === roleSlotId,
+                );
+                openManual(occupant?.playerId);
+              }}
+            />
+          ) : (
+            <div className="player-grid">
+              {fieldPlayers.map((player) => (
+                <PlayerCard
+                  key={player.id}
+                  player={player}
+                  state="field"
+                  role={roleLabel(player.id, roleAssignments)}
+                  actualMs={projection.actualMsByPlayer[playerId(player.id)] ?? 0}
+                  intervalMs={currentIntervalDuration(
+                    projection.playingStintsByPlayer[playerId(player.id)],
+                    elapsedMs,
+                  )}
+                  onSelect={() => openManual(player.id)}
+                />
+              ))}
+            </div>
+          )}
         </div>
         <div>
           <h2>Benk</h2>
@@ -1533,6 +1765,12 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
           benchPlayers={benchPlayers}
           outgoing={manualOutgoing}
           incoming={manualIncoming}
+          roleText={manualRoleText}
+          planText={
+            manualConsumedBoundary(manualIncoming, elapsedMs) !== undefined
+              ? "Teller som det planlagte byttet"
+              : undefined
+          }
           elapsedMs={elapsedMs}
           pauseScope={manualPauseScope}
           balanceTreatment={manualBalanceTreatment}
@@ -1629,6 +1867,17 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
               <Button onClick={() => void undoLastAction()}>
                 Angre siste byttehandling
               </Button>
+              {formation && (
+                <Button
+                  onClick={() => {
+                    setPositionDraft([...roleAssignments]);
+                    setPositionPick(undefined);
+                    setToolsOpen(false);
+                  }}
+                >
+                  Bytt posisjoner
+                </Button>
+              )}
               <div>
                 <h3>Tilgjengelighet</h3>
                 <div className="availability-actions">
@@ -1672,6 +1921,66 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
               </Button>
               <Button variant="quiet" onClick={() => setToolsOpen(false)}>
                 Lukk
+              </Button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {formation && positionDraft && (
+        <div className="dialog-backdrop" role="presentation">
+          <section
+            className="dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="positions-title"
+          >
+            <h2 id="positions-title">Bytt posisjoner</h2>
+            <p className="muted">Trykk på to plasser for å bytte barna.</p>
+            <Pitch
+              formation={formation}
+              assignments={positionDraft}
+              players={players}
+              selectedRoleSlotId={positionPick}
+              onSlotPress={(roleSlotId) => {
+                if (!positionPick || positionPick === roleSlotId) {
+                  setPositionPick(positionPick === roleSlotId ? undefined : roleSlotId);
+                  return;
+                }
+                const first = positionDraft.find(
+                  (assignment) => assignment.roleSlotId === positionPick,
+                );
+                const second = positionDraft.find(
+                  (assignment) => assignment.roleSlotId === roleSlotId,
+                );
+                if (first && second)
+                  setPositionDraft(
+                    swapRoles(
+                      formation,
+                      positionDraft,
+                      first.playerId,
+                      second.playerId,
+                    ),
+                  );
+                setPositionPick(undefined);
+              }}
+            />
+            <div className="dialog__actions">
+              <Button
+                variant="primary"
+                disabled={saveState === "saving"}
+                onClick={() => void savePositions(positionDraft)}
+              >
+                LAGRE POSISJONER
+              </Button>
+              <Button
+                variant="quiet"
+                onClick={() => {
+                  setPositionDraft(undefined);
+                  setPositionPick(undefined);
+                }}
+              >
+                Avbryt
               </Button>
             </div>
           </section>
@@ -1749,12 +2058,14 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
 function PlayerCard({
   player,
   state,
+  role,
   actualMs,
   intervalMs,
   onSelect,
 }: {
   player: { id: string; name: string; membership: "team" | "guest" };
   state: "field" | "bench";
+  role?: string | undefined;
   actualMs: number;
   intervalMs: number;
   onSelect?: () => void;
@@ -1763,7 +2074,7 @@ function PlayerCard({
     <>
       <span className="live-player__state">
         <span aria-hidden="true">{state === "field" ? "●" : "○"}</span>{" "}
-        {state === "field" ? "På banen" : "Benk"}
+        {role ?? (state === "field" ? "På banen" : "Benk")}
         {player.membership === "guest" ? " · Gjest" : ""}
       </span>
       <strong title={player.name}>{player.name}</strong>
@@ -1792,6 +2103,8 @@ function ManualDialog({
   benchPlayers,
   outgoing,
   incoming,
+  roleText,
+  planText,
   elapsedMs,
   pauseScope,
   balanceTreatment,
@@ -1808,6 +2121,8 @@ function ManualDialog({
   benchPlayers: { id: string; name: string; membership: "team" | "guest" }[];
   outgoing: string | undefined;
   incoming: string | undefined;
+  roleText?: string | undefined;
+  planText?: string | undefined;
   elapsedMs: number;
   pauseScope: ParticipationPauseScope;
   balanceTreatment: BalanceTreatment;
@@ -1862,6 +2177,8 @@ function ManualDialog({
             <strong>
               {fieldPlayers.find((player) => player.id === outgoing)?.name} ut
             </strong>
+            {roleText && <span>{roleText}</span>}
+            {planText && <span>{planText}</span>}
             <span>Registreres på {formatDuration(elapsedMs)}</span>
           </div>
         )}

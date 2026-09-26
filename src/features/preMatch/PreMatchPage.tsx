@@ -11,13 +11,30 @@ import {
   DEFAULT_COMPENSATION_TOLERANCE_MS,
   DEFAULT_MINIMUM_BENCH_REST_MS,
   DEFAULT_RETURN_COMPENSATION_CAP_MS,
+  goalkeeperSlot,
+  normalizeRoleAssignments,
   planMatch,
   playerId,
+  suggestRoleAssignments,
   type PlayerId,
+  type RoleAssignment,
 } from "../../domain";
 import type { ActiveMatchJournalRecord, MatchEventRecord } from "../../storage/schema";
 import { calculateTournamentTotals, loadMatchData, playerName } from "../shared/data";
+import {
+  calculatePositionExposure,
+  describeMoves,
+  effectiveFormation,
+  goalkeeperPolicy,
+  goalkeeperPreferences,
+  roleLabelFor,
+  roleSteps,
+  toRoleAssignmentRecords,
+  toRoleAssignments,
+} from "../shared/formation";
+import { browserClockSource } from "../../platform/browserClockSource";
 import { useAsyncData } from "../shared/hooks";
+import { Pitch } from "../shared/Pitch";
 import { formString } from "../shared/forms";
 import {
   effectiveSubstitutionInterval,
@@ -28,12 +45,11 @@ export function PreMatchPage({ matchId }: { matchId: string }) {
   const { repository } = useServices();
   const state = useAsyncData(async () => {
     const data = await loadMatchData(repository, matchId);
-    const priorTotals = await calculateTournamentTotals(
-      repository,
-      data.tournamentBundle,
-      data.match.order,
-    );
-    return { ...data, priorTotals };
+    const [priorTotals, priorExposure] = await Promise.all([
+      calculateTournamentTotals(repository, data.tournamentBundle, data.match.order),
+      calculatePositionExposure(repository, data.tournamentBundle, data.match.order),
+    ]);
+    return { ...data, priorTotals, priorExposure };
   }, [repository, matchId]);
 
   if (state.status === "loading") {
@@ -45,11 +61,21 @@ export function PreMatchPage({ matchId }: { matchId: string }) {
 
 type ReadyData = Awaited<ReturnType<typeof loadMatchData>> & {
   priorTotals: Awaited<ReturnType<typeof calculateTournamentTotals>>;
+  priorExposure: Awaited<ReturnType<typeof calculatePositionExposure>>;
 };
 
 function PreMatchReady({ data }: { data: ReadyData }) {
   const { repository, audio, wakeLock } = useServices();
-  const { match, tournamentBundle: bundle, priorTotals } = data;
+  const { match, tournamentBundle: bundle, priorTotals, priorExposure } = data;
+  const formation = effectiveFormation(match, bundle.tournament);
+  const keeperPolicy = goalkeeperPolicy(bundle.tournament);
+  const [manualRoles, setManualRoles] = useState<RoleAssignment[] | undefined>(() =>
+    match.selectedRoleAssignments
+      ? toRoleAssignments(match.selectedRoleAssignments)
+      : undefined,
+  );
+  const [pickedRoleSlotId, setPickedRoleSlotId] = useState<string>();
+  const [pickedBenchId, setPickedBenchId] = useState<string>();
   const [players, setPlayers] = useState(bundle.players);
   const initialParticipantIds = players
     .filter(
@@ -134,6 +160,108 @@ function PreMatchReady({ data }: { data: ReadyData }) {
         ),
       ]),
   );
+  const goalkeeperContext = {
+    goalkeeperPreferenceByPlayer: goalkeeperPreferences(players),
+    exposure: priorExposure,
+  };
+  const startersComplete = starterIds.length === match.playersOnField;
+  const roleAssignments: RoleAssignment[] = formation
+    ? normalizeRoleAssignments(
+        formation,
+        starterIds.map(playerId),
+        manualRoles ??
+          (startersComplete
+            ? suggestRoleAssignments(
+                formation,
+                starterIds.map(playerId),
+                goalkeeperContext,
+              )
+            : []),
+      )
+    : [];
+  const keeperSlot = formation ? goalkeeperSlot(formation) : undefined;
+  const keeperId = keeperSlot
+    ? roleAssignments.find((assignment) => assignment.roleSlotId === keeperSlot.id)
+        ?.playerId
+    : undefined;
+  const keeperPlayer = players.find((player) => player.id === keeperId);
+  const lockedOnFieldPlayerIds =
+    keeperPolicy === "fixed" && keeperId !== undefined ? [keeperId] : [];
+  const clearPicks = () => {
+    setPickedRoleSlotId(undefined);
+    setPickedBenchId(undefined);
+  };
+  const placeOnSlot = (benchPlayerId: string, roleSlotId: string) => {
+    if (!formation || startInFlight.current) return;
+    const occupant = roleAssignments.find(
+      (assignment) => assignment.roleSlotId === roleSlotId,
+    );
+    setStarterIds([
+      ...starterIds.filter((id) => id !== occupant?.playerId),
+      benchPlayerId,
+    ]);
+    setManualRoles([
+      ...roleAssignments.filter((assignment) => assignment.roleSlotId !== roleSlotId),
+      { roleSlotId, playerId: playerId(benchPlayerId) },
+    ]);
+    clearPicks();
+  };
+  const pressRoleSlot = (roleSlotId: string) => {
+    if (!formation || startInFlight.current) return;
+    if (pickedBenchId) {
+      placeOnSlot(pickedBenchId, roleSlotId);
+      return;
+    }
+    if (!pickedRoleSlotId || pickedRoleSlotId === roleSlotId) {
+      setPickedRoleSlotId(pickedRoleSlotId === roleSlotId ? undefined : roleSlotId);
+      return;
+    }
+    const from = pickedRoleSlotId;
+    setManualRoles(
+      roleAssignments.map((assignment) =>
+        assignment.roleSlotId === from
+          ? { ...assignment, roleSlotId }
+          : assignment.roleSlotId === roleSlotId
+            ? { ...assignment, roleSlotId: from }
+            : assignment,
+      ),
+    );
+    clearPicks();
+  };
+  const pressBenchPlayer = (benchPlayerId: string) => {
+    if (!formation || startInFlight.current) return;
+    if (pickedRoleSlotId) {
+      placeOnSlot(benchPlayerId, pickedRoleSlotId);
+      return;
+    }
+    const emptySlot = formation.slots.find(
+      (roleSlot) =>
+        !roleAssignments.some((assignment) => assignment.roleSlotId === roleSlot.id),
+    );
+    if (emptySlot) {
+      placeOnSlot(benchPlayerId, emptySlot.id);
+      return;
+    }
+    setPickedBenchId(pickedBenchId === benchPlayerId ? undefined : benchPlayerId);
+  };
+  const benchFromSlot = (roleSlotId: string) => {
+    const occupant = roleAssignments.find(
+      (assignment) => assignment.roleSlotId === roleSlotId,
+    );
+    if (!occupant) return;
+    setStarterIds(starterIds.filter((id) => id !== occupant.playerId));
+    setManualRoles(roleAssignments.filter((assignment) => assignment !== occupant));
+    clearPicks();
+  };
+  const suggestLineup = () => {
+    setStarterIds(
+      recommendedIds
+        .filter((id) => availableIds.includes(id))
+        .slice(0, match.playersOnField),
+    );
+    setManualRoles(undefined);
+    clearPicks();
+  };
   const planningResult =
     starterIds.length === match.playersOnField &&
     availableIds.length >= match.playersOnField
@@ -141,6 +269,7 @@ function PreMatchReady({ data }: { data: ReadyData }) {
           nowElapsedMs: 0,
           plannedEndElapsedMs: match.plannedDurationMs,
           fieldSlots: match.playersOnField,
+          lockedOnFieldPlayerIds,
           orderedAvailablePlayerIds: eligiblePlayers
             .filter((player) => availableIds.includes(player.id))
             .map((player) => playerId(player.id)),
@@ -166,6 +295,10 @@ function PreMatchReady({ data }: { data: ReadyData }) {
         })
       : undefined;
   const recommendation = planningResult?.recommendation;
+  const plannedRoles =
+    formation && planningResult
+      ? roleSteps(formation, roleAssignments, planningResult.preview, goalkeeperContext)
+      : [];
 
   const toggleAvailability = async (id: string) => {
     if (availabilityInFlight.current || startInFlight.current) return;
@@ -320,7 +453,7 @@ function PreMatchReady({ data }: { data: ReadyData }) {
       audio.initialize(),
       wakeLock.request(),
     ]);
-    const now = Date.now();
+    const now = browserClockSource.wallNowMs();
     const event: MatchEventRecord = {
       id: crypto.randomUUID(),
       matchId: match.id,
@@ -335,6 +468,12 @@ function PreMatchReady({ data }: { data: ReadyData }) {
         availablePlayerIds: availableIds,
         plannedDurationMs: match.plannedDurationMs,
         playersOnField: match.playersOnField,
+        ...(formation
+          ? {
+              formationId: formation.id,
+              starterRoleAssignments: toRoleAssignmentRecords(roleAssignments),
+            }
+          : {}),
       },
     };
     const journal: ActiveMatchJournalRecord = {
@@ -370,6 +509,9 @@ function PreMatchReady({ data }: { data: ReadyData }) {
           ...match,
           eligiblePlayerIds: participantIds,
           selectedStarterIds: starterIds,
+          ...(formation
+            ? { selectedRoleAssignments: toRoleAssignmentRecords(roleAssignments) }
+            : {}),
           status: "running",
         },
         journal,
@@ -395,7 +537,7 @@ function PreMatchReady({ data }: { data: ReadyData }) {
       <PageHeader
         eyebrow={`${formatMatchTime(match.scheduledStartLocal)}${match.pitch ? ` · Bane ${match.pitch}` : ""}`}
         title={`mot ${match.opponent || "motstander"}`}
-        subtitle={`${formatDuration(match.plannedDurationMs)} · ${match.playersOnField} spillere på banen · ${substitutionRhythmLabel(match, bundle.tournament)}`}
+        subtitle={`${formatDuration(match.plannedDurationMs)} · ${formation ? formation.name : `${match.playersOnField} spillere på banen`} · ${substitutionRhythmLabel(match, bundle.tournament)}`}
         onBack={() =>
           navigate({ name: "tournament", tournamentId: bundle.tournament.id })
         }
@@ -465,16 +607,30 @@ function PreMatchReady({ data }: { data: ReadyData }) {
             virkeligheten krever det.
           </p>
           <ol className="substitution-plan">
-            {planningResult.preview.map((step) => (
+            {planningResult.preview.map((step, stepIndex) => (
               <li key={`${step.dueAtElapsedMs}-${step.swaps[0]?.incomingPlayerId}`}>
                 <time>{formatDuration(step.dueAtElapsedMs)}</time>
                 <span>
                   {step.swaps
-                    .map(
-                      (swap) =>
-                        `${playerName(players, swap.incomingPlayerId)} inn · ${playerName(players, swap.outgoingPlayerId)} ut`,
-                    )
+                    .map((swap) => {
+                      const role =
+                        formation && plannedRoles[stepIndex]
+                          ? roleLabelFor(
+                              formation,
+                              plannedRoles[stepIndex].assignmentsAfter,
+                              swap.incomingPlayerId,
+                            )
+                          : undefined;
+                      return `${playerName(players, swap.incomingPlayerId)} inn${
+                        role ? ` (${role.toLocaleLowerCase("nb-NO")})` : ""
+                      } · ${playerName(players, swap.outgoingPlayerId)} ut`;
+                    })
                     .join(" + ")}
+                  {formation && plannedRoles[stepIndex]?.moves.length ? (
+                    <small className="substitution-plan__move">
+                      {describeMoves(formation, plannedRoles[stepIndex].moves, players)}
+                    </small>
+                  ) : null}
                 </span>
               </li>
             ))}
@@ -549,47 +705,104 @@ function PreMatchReady({ data }: { data: ReadyData }) {
         </ul>
       </Card>
 
-      <Card>
-        <div className="split-heading">
-          <h2>Startoppstilling</h2>
-          <StatusPill
-            tone={starterIds.length === match.playersOnField ? "positive" : "warning"}
-          >
-            {starterIds.length} av {match.playersOnField} valgt
-          </StatusPill>
-        </div>
-        <div className="starter-grid">
-          {activeAvailablePlayers.map((player) => (
-            <button
-              key={player.id}
-              className="starter-card"
-              aria-pressed={starterIds.includes(player.id)}
-              disabled={starting}
-              onClick={() => toggleStarter(player.id)}
+      {formation ? (
+        <Card>
+          <div className="split-heading">
+            <h2>Startoppstilling</h2>
+            <StatusPill tone={startersComplete ? "positive" : "warning"}>
+              {starterIds.length} av {match.playersOnField} valgt
+            </StatusPill>
+          </div>
+          <p className="muted pitch-hint" aria-live="polite">
+            {pickedBenchId
+              ? `Trykk plassen ${playerName(players, pickedBenchId)} skal ta.`
+              : pickedRoleSlotId
+                ? "Trykk en annen plass for å bytte, eller et barn på benken."
+                : `${formation.name}. Trykk en plass og så et barn eller en annen plass.${
+                    keeperPolicy === "fixed" && keeperPlayer
+                      ? ` ${keeperPlayer.name} står i mål hele kampen.`
+                      : ""
+                  }`}
+          </p>
+          <Pitch
+            formation={formation}
+            assignments={roleAssignments}
+            players={players}
+            selectedRoleSlotId={pickedRoleSlotId}
+            onSlotPress={pressRoleSlot}
+          />
+          <div className="split-heading">
+            <h3>Benk</h3>
+            {pickedRoleSlotId &&
+              roleAssignments.some(
+                (assignment) => assignment.roleSlotId === pickedRoleSlotId,
+              ) && (
+                <Button variant="quiet" onClick={() => benchFromSlot(pickedRoleSlotId)}>
+                  Sett på benken
+                </Button>
+              )}
+          </div>
+          <div className="pitch-bench" role="group" aria-label="Benk">
+            {activeAvailablePlayers
+              .filter((player) => !starterIds.includes(player.id))
+              .map((player) => (
+                <button
+                  key={player.id}
+                  type="button"
+                  className="pitch-bench__player"
+                  aria-pressed={pickedBenchId === player.id}
+                  aria-label={`Benk: ${player.name}`}
+                  disabled={starting}
+                  onClick={() => pressBenchPlayer(player.id)}
+                >
+                  {player.name}
+                </button>
+              ))}
+            {activeAvailablePlayers.length <= starterIds.length && (
+              <p className="muted">Ingen på benken.</p>
+            )}
+          </div>
+          {keeperPlayer && keeperPlayer.goalkeeperPreference === "unavailable" && (
+            <div className="notice" role="alert">
+              {keeperPlayer.name} er markert som «ikke i mål». Velg en annen keeper.
+            </div>
+          )}
+          <Button full disabled={starting} onClick={suggestLineup}>
+            Foreslå oppstilling
+          </Button>
+        </Card>
+      ) : (
+        <Card>
+          <div className="split-heading">
+            <h2>Startoppstilling</h2>
+            <StatusPill
+              tone={starterIds.length === match.playersOnField ? "positive" : "warning"}
             >
-              <span aria-hidden="true">
-                {starterIds.includes(player.id) ? "●" : "○"}
-              </span>
-              <strong>{player.name}</strong>
-              <small>{starterIds.includes(player.id) ? "På banen" : "Benk"}</small>
-            </button>
-          ))}
-        </div>
-        <Button
-          full
-          disabled={starting}
-          onClick={() =>
-            setStarterIds(
-              recommendedIds
-                .filter((id) => availableIds.includes(id))
-                .slice(0, match.playersOnField),
-            )
-          }
-        >
-          Bruk anbefalt startoppstilling
-        </Button>
-      </Card>
-
+              {starterIds.length} av {match.playersOnField} valgt
+            </StatusPill>
+          </div>
+          <div className="starter-grid">
+            {activeAvailablePlayers.map((player) => (
+              <button
+                key={player.id}
+                className="starter-card"
+                aria-pressed={starterIds.includes(player.id)}
+                disabled={starting}
+                onClick={() => toggleStarter(player.id)}
+              >
+                <span aria-hidden="true">
+                  {starterIds.includes(player.id) ? "●" : "○"}
+                </span>
+                <strong>{player.name}</strong>
+                <small>{starterIds.includes(player.id) ? "På banen" : "Benk"}</small>
+              </button>
+            ))}
+          </div>
+          <Button full disabled={starting} onClick={suggestLineup}>
+            Bruk anbefalt startoppstilling
+          </Button>
+        </Card>
+      )}
       <Card>
         <p className="eyebrow">Første planlagte bytte</p>
         {firstSwap && recommendation ? (

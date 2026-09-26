@@ -13,6 +13,11 @@ import {
 } from "../../storage/backup";
 import type { TournamentRecord } from "../../storage/schema";
 import { useAsyncData } from "../shared/hooks";
+import {
+  MatchFormatFields,
+  parseGoalkeeperPolicy,
+  parseMatchFormat,
+} from "../shared/MatchFormatFields";
 import { formString } from "../shared/forms";
 import {
   parseSubstitutionInterval,
@@ -83,18 +88,22 @@ export function SettingsPage({ tournamentId }: { tournamentId?: string }) {
       const defaultSubstitutionIntervalMs = parseSubstitutionInterval(
         formString(data, "substitutionRhythm"),
       );
+      const format = parseMatchFormat(data);
       const updatedTournament: TournamentRecord = {
         ...bundle.tournament,
         name: formString(data, "name").trim(),
         date: formString(data, "date"),
         teamName: formString(data, "teamName").trim(),
         defaultMatchDurationMs: Number(data.get("durationMinutes") ?? 12) * 60_000,
-        defaultPlayersOnField: Number(data.get("playersOnField") ?? 3),
+        defaultPlayersOnField: format.playersOnField,
         defaultMinimumStintMs: Number(data.get("minimumStint") ?? 60) * 1000,
         defaultAlertLeadMs: Number(data.get("alertLead") ?? 10) * 1000,
         fairnessScope,
+        goalkeeperPolicy: parseGoalkeeperPolicy(formString(data, "goalkeeperPolicy")),
         ...(coachLabel ? { coachLabel } : {}),
       };
+      if (format.formationId) updatedTournament.defaultFormationId = format.formationId;
+      else delete updatedTournament.defaultFormationId;
       if (defaultSubstitutionIntervalMs) {
         updatedTournament.defaultSubstitutionIntervalMs = defaultSubstitutionIntervalMs;
       } else {
@@ -295,6 +304,11 @@ export function SettingsPage({ tournamentId }: { tournamentId?: string }) {
                 <input name="coachLabel" defaultValue={bundle.tournament.coachLabel} />
               </Field>
             </div>
+            <MatchFormatFields
+              playersOnField={bundle.tournament.defaultPlayersOnField}
+              formationId={bundle.tournament.defaultFormationId ?? null}
+              policy={bundle.tournament.goalkeeperPolicy ?? "fixed"}
+            />
             <div className="form-grid form-grid--two">
               <Field label="Kamplengde (min)">
                 <input
@@ -303,15 +317,6 @@ export function SettingsPage({ tournamentId }: { tournamentId?: string }) {
                   min="1"
                   required
                   defaultValue={bundle.tournament.defaultMatchDurationMs / 60_000}
-                />
-              </Field>
-              <Field label="Spillere på banen">
-                <input
-                  name="playersOnField"
-                  type="number"
-                  min="1"
-                  required
-                  defaultValue={bundle.tournament.defaultPlayersOnField}
                 />
               </Field>
               <Field label="Minste periode (sek)">
