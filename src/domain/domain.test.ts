@@ -538,6 +538,128 @@ describe("planner", () => {
     ]);
   });
 
+  it("keeps five-player recommendations on a fixed two-minute match-clock grid", () => {
+    const ids = ["p1", "p2", "p3", "p4", "p5"].map(playerId);
+    const result = planMatch({
+      nowElapsedMs: 0,
+      plannedEndElapsedMs: 720_000,
+      fieldSlots: 3,
+      orderedAvailablePlayerIds: ids,
+      currentLineupIds: ids.slice(0, 3),
+      balancesMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+      currentFieldStintMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+      currentBenchStintMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+      minimumPreferredStintMs: 60_000,
+      fixedSubstitutionRhythmMs: 120_000,
+    });
+
+    expect(result.preview.slice(0, 5).map((step) => step.dueAtElapsedMs)).toEqual([
+      120_000, 240_000, 360_000, 480_000, 600_000,
+    ]);
+  });
+
+  it("anchors fixed rhythm after delayed, early, and exact-boundary confirmations", () => {
+    const ids = ["p1", "p2", "p3", "p4", "p5"].map(playerId);
+    const planningFrom = (
+      nowElapsedMs: number,
+      currentLineupIds: readonly (typeof ids)[number][],
+    ) =>
+      planMatch({
+        nowElapsedMs,
+        plannedEndElapsedMs: 720_000,
+        fieldSlots: 3,
+        orderedAvailablePlayerIds: ids,
+        currentLineupIds,
+        balancesMsByPlayer: Object.fromEntries(
+          ids.map((id) => [
+            id,
+            currentLineupIds.includes(id)
+              ? (nowElapsedMs * 2) / 5
+              : -(nowElapsedMs * 3) / 5,
+          ]),
+        ),
+        currentFieldStintMsByPlayer: Object.fromEntries(
+          ids.map((id) => [id, currentLineupIds.includes(id) ? nowElapsedMs : 0]),
+        ),
+        currentBenchStintMsByPlayer: Object.fromEntries(
+          ids.map((id) => [id, currentLineupIds.includes(id) ? 0 : nowElapsedMs]),
+        ),
+        minimumPreferredStintMs: 60_000,
+        fixedSubstitutionRhythmMs: 120_000,
+      });
+
+    expect(
+      planningFrom(145_000, [ids[1]!, ids[2]!, ids[3]!]).recommendation,
+    ).toMatchObject({ dueAtElapsedMs: 240_000 });
+    expect(
+      planningFrom(75_000, [ids[1]!, ids[2]!, ids[3]!]).recommendation,
+    ).toMatchObject({ dueAtElapsedMs: 120_000 });
+    expect(
+      planningFrom(120_000, [ids[1]!, ids[2]!, ids[3]!]).recommendation,
+    ).toMatchObject({ dueAtElapsedMs: 240_000 });
+  });
+
+  it("allows forced fairness to preempt a fixed rhythm without exceeding match end", () => {
+    const ids = ["p1", "p2", "p3", "p4", "p5"].map(playerId);
+    const input = {
+      nowElapsedMs: 0,
+      plannedEndElapsedMs: 720_000,
+      fieldSlots: 3,
+      orderedAvailablePlayerIds: ids,
+      currentLineupIds: ids.slice(0, 3),
+      balancesMsByPlayer: {
+        [ids[0]!]: 1_000_000,
+        [ids[1]!]: 1_000_000,
+        [ids[2]!]: 1_000_000,
+        [ids[3]!]: -1_000_000,
+        [ids[4]!]: -1_000_000,
+      },
+      currentFieldStintMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+      currentBenchStintMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+      minimumPreferredStintMs: 60_000,
+      fixedSubstitutionRhythmMs: 120_000,
+    };
+    const result = planMatch(input);
+
+    expect(result.recommendation?.dueAtElapsedMs).toBe(0);
+    expect(result.recommendation?.dueAtElapsedMs).toBeLessThan(
+      input.fixedSubstitutionRhythmMs,
+    );
+    expect(result.preview.every((step) => step.dueAtElapsedMs < 720_000)).toBe(true);
+  });
+
+  it("keeps fixed-rhythm plans deterministic with valid lineups and full capacity", () => {
+    const ids = ["p1", "p2", "p3", "p4", "p5"].map(playerId);
+    const input = {
+      nowElapsedMs: 0,
+      plannedEndElapsedMs: 720_000,
+      fieldSlots: 3,
+      orderedAvailablePlayerIds: ids,
+      currentLineupIds: ids.slice(0, 3),
+      balancesMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+      actualMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+      idealMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+      currentFieldStintMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+      currentBenchStintMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+      minimumPreferredStintMs: 60_000,
+      fixedSubstitutionRhythmMs: 120_000,
+    };
+    const first = planMatch(input);
+
+    expect(planMatch(input)).toEqual(first);
+    expect(
+      Object.values(first.recommendation?.projectedActualMsByPlayer ?? {}).reduce(
+        (total, value) => total + value,
+        0,
+      ),
+    ).toBe(2_160_000);
+    for (const step of first.preview) {
+      expect(step.lineupAfterIds).toHaveLength(3);
+      expect(new Set(step.lineupAfterIds).size).toBe(3);
+      expect(step.lineupAfterIds.every((id) => ids.includes(id))).toBe(true);
+    }
+  });
+
   it("does not recommend a change when every available player is on field", () => {
     expect(
       planMatch({

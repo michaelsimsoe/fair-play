@@ -20,6 +20,7 @@ export default defineConfig({
         "icons/apple-touch-icon.png",
         "seed/seed-krokelvdalen-2.json",
         "seed/seed-storm-bla-2026-09-12.json",
+        "seed/seed-krokelvdalen-3-2026-09-26.json",
       ],
       manifest: {
         name: "FairPlay Sideline",

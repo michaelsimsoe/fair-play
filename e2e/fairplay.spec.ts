@@ -328,3 +328,39 @@ test("loads the Storm BLÅ match day from the home screen", async ({ page }) => 
     await expect(page.getByText(`mot ${opponent}`)).toBeVisible();
   }
 });
+
+test("loads Krokelvdalen 3 with a fixed two-minute rhythm", async ({ page }) => {
+  await openWithClock(page);
+  await page.getByRole("button", { name: "Last inn Krokelvdalen 3" }).click();
+
+  await expect(page.getByRole("heading", { name: "Krokelvdalen 3" })).toBeVisible();
+  await expect(page.getByText("10:30 · 12:00")).toBeVisible();
+  await expect(page.getByText("mot Reinen 2")).toBeVisible();
+  await page.getByRole("button", { name: "GJØR KLAR KAMP" }).click();
+  await page.getByRole("button", { name: "START KAMP" }).click();
+  await expect(page.getByText("Neste bytte om 02:00")).toBeVisible();
+  await page.clock.fastForward(145_000);
+  await expect(
+    page.getByText("+00:25 · Ta byttet når spillet tillater det"),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "BYTTET ER GJORT" }).click();
+  await expect(page.getByText("Neste bytte om 01:35")).toBeVisible();
+});
+
+test("overrides the fixed rhythm for one match", async ({ page }) => {
+  await openWithClock(page);
+  await page.getByRole("button", { name: "Last inn Krokelvdalen 3" }).click();
+  await page.getByRole("button", { name: /Kamper\s+0 av 4 ferdige/ }).click();
+  const firstMatch = page.locator(".card").filter({ hasText: "mot Reinen 2" }).first();
+  await firstMatch.getByRole("button", { name: "Rediger" }).click();
+  const dialog = page.getByRole("dialog", { name: "Rediger kamp" });
+  await dialog
+    .getByLabel("Bytterytme")
+    .selectOption({ label: "Adaptiv rettferdig rytme" });
+  await dialog.getByRole("button", { name: "Lagre kamp" }).click();
+  await expect(firstMatch).toContainText("Adaptiv rettferdig rytme");
+  await firstMatch.locator(".match-row__open").click();
+  await expect(page.getByText(/Adaptiv rettferdig rytme/)).toBeVisible();
+  await page.getByRole("button", { name: "START KAMP" }).click();
+  await expect(page.getByText("Neste bytte om 02:24")).toBeVisible();
+});

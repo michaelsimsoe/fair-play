@@ -50,6 +50,12 @@ export type PlannerInput = Readonly<{
   minimumPreferredBenchRestMs?: number;
   compensationToleranceMs?: number;
   preferredChangeIntervalMs?: number;
+  /**
+   * Optional fixed recommendation grid on the match clock. For example,
+   * 120_000 recommends 02:00, 04:00, and so on; replanning never shifts it.
+   * When provided, this takes precedence over `preferredChangeIntervalMs`.
+   */
+  fixedSubstitutionRhythmMs?: number;
   previousRecommendation?: Recommendation;
   actualMsByPlayer?: Readonly<Record<PlayerId, number>>;
   idealMsByPlayer?: Readonly<Record<PlayerId, number>>;
@@ -162,6 +168,35 @@ const minimumBenchRest = (input: PlannerInput) =>
   input.minimumPreferredBenchRestMs! > 0
     ? Math.floor(input.minimumPreferredBenchRestMs!)
     : 0;
+
+const fixedSubstitutionRhythm = (input: PlannerInput) =>
+  Number.isFinite(input.fixedSubstitutionRhythmMs) &&
+  input.fixedSubstitutionRhythmMs! >= 1
+    ? Math.floor(input.fixedSubstitutionRhythmMs!)
+    : undefined;
+
+function preferredDelay(
+  input: PlannerInput,
+  simulation: Simulation,
+  remaining: number,
+): number {
+  const rhythm = fixedSubstitutionRhythm(input);
+  if (rhythm !== undefined) {
+    const nextBoundary = (Math.floor(simulation.now / rhythm) + 1) * rhythm;
+    return Math.max(0, Math.min(remaining, nextBoundary - simulation.now));
+  }
+  return Math.max(
+    0,
+    Math.min(
+      remaining,
+      input.preferredChangeIntervalMs ??
+        Math.floor(
+          (input.plannedEndElapsedMs - input.nowElapsedMs) /
+            input.orderedAvailablePlayerIds.length,
+        ),
+    ),
+  );
+}
 
 function matchTotals(
   input: PlannerInput,
@@ -420,14 +455,7 @@ function nextStep(
     matchOnly,
     simulation.futureAllocatedMs,
   ).allocationMsByPlayer;
-  const preferred = Math.max(
-    0,
-    Math.min(
-      remaining,
-      input.preferredChangeIntervalMs ??
-        Math.floor((input.plannedEndElapsedMs - input.nowElapsedMs) / ids.length),
-    ),
-  );
+  const preferred = preferredDelay(input, simulation, remaining);
   const latestBenchEntry = Math.min(
     ...bench.map((id) => remaining - amount(allocation, id)),
   );

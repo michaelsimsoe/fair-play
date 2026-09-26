@@ -44,6 +44,10 @@ _Avoid_: Override, forced substitution
 An advisory future exchange calculated from the actual match history and current fairness balances. It never changes the lineup until confirmed.
 _Avoid_: Scheduled substitution, automatic substitution
 
+**Substitution rhythm**:
+The preferred fixed grid of recommendation times on the match clock, such as every two minutes at 02:00, 04:00, 06:00, and so on. A delayed confirmation does not move the later grid times, although fairness or feasibility may require a recommendation between them.
+_Avoid_: Stint length, countdown reset
+
 **Projected difference**:
 The expected difference between a player's actual time and match target if the current recommendation plan is followed.
 _Avoid_: Error, failure

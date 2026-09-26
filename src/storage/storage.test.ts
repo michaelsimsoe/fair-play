@@ -2,6 +2,7 @@ import Dexie from "dexie";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import seed from "../../public/seed/seed-krokelvdalen-2.json";
 import stormSeed from "../../public/seed/seed-storm-bla-2026-09-12.json";
+import krokelvdalen3Seed from "../../public/seed/seed-krokelvdalen-3-2026-09-26.json";
 import { projectMatch } from "../domain";
 import { calculateTournamentTotals } from "../features/shared/data";
 import {
@@ -637,6 +638,7 @@ describe("backup and import", () => {
       defaultPlayersOnField: 3,
       defaultMatchDurationMs: 720_000,
     });
+
     expect(bundle?.players.map((player) => player.name)).toEqual([
       "Ask",
       "Ali",
@@ -670,6 +672,47 @@ describe("backup and import", () => {
         scheduledStartLocal: "2026-09-12T13:15:00",
         opponent: "Reinen IL Hvit",
         pitch: "1",
+      },
+    ]);
+  });
+
+  it("imports Krokelvdalen 3 with a fixed two-minute rhythm", async () => {
+    const tournamentId = await importSeed(JSON.stringify(krokelvdalen3Seed), database);
+    const bundle = await repository.getTournamentBundle(tournamentId);
+
+    expect(bundle?.tournament).toMatchObject({
+      date: "2026-09-26",
+      teamName: "Krokelvdalen 3",
+      defaultSubstitutionIntervalMs: 120_000,
+    });
+    expect(bundle?.players.map((player) => player.name)).toEqual([
+      "Ask",
+      "Henrik",
+      "Kai",
+      "Kasper",
+      "Fredrik",
+    ]);
+    expect(
+      bundle?.matches.map(({ scheduledStartLocal, opponent }) => ({
+        scheduledStartLocal,
+        opponent,
+      })),
+    ).toEqual([
+      {
+        scheduledStartLocal: "2026-09-26T10:30:00",
+        opponent: "Reinen 2",
+      },
+      {
+        scheduledStartLocal: "2026-09-26T10:45:00",
+        opponent: "Reinen 3",
+      },
+      {
+        scheduledStartLocal: "2026-09-26T11:45:00",
+        opponent: "Ulfstind 1",
+      },
+      {
+        scheduledStartLocal: "2026-09-26T12:00:00",
+        opponent: "Laksvatn IL",
       },
     ]);
   });

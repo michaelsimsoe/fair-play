@@ -50,6 +50,7 @@ import {
   participationPauseMatchIds,
   type ParticipationPauseScope,
 } from "../shared/participationPause";
+import { effectiveSubstitutionInterval } from "../shared/substitutionRhythm";
 
 type LoadedLiveData = Awaited<ReturnType<typeof loadMatchData>> & {
   journal: ActiveMatchJournalRecord | undefined;
@@ -271,6 +272,10 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
           "LINEUP_SYNCHRONIZED",
         ].includes(event.type),
       );
+    const fixedSubstitutionRhythmMs = effectiveSubstitutionInterval(
+      match,
+      bundle.tournament,
+    );
     return planRecommendation({
       nowElapsedMs: planningElapsedMs,
       plannedEndElapsedMs: match.plannedDurationMs,
@@ -292,6 +297,7 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
       minimumPreferredStintMs: match.minimumStintMs,
       minimumPreferredBenchRestMs: DEFAULT_MINIMUM_BENCH_REST_MS,
       compensationToleranceMs: DEFAULT_COMPENSATION_TOLERANCE_MS,
+      ...(fixedSubstitutionRhythmMs ? { fixedSubstitutionRhythmMs } : {}),
       preferredChangeIntervalMs: Math.floor(
         match.plannedDurationMs / availableIds.length,
       ),
@@ -304,7 +310,7 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
     });
   }, [
     players,
-    bundle.tournament.fairnessScope,
+    bundle.tournament,
     match,
     planningElapsedMs,
     planningProjection,

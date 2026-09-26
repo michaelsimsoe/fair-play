@@ -13,6 +13,11 @@ import {
 import type { MatchRecord } from "../../storage/schema";
 import { useAsyncData } from "../shared/hooks";
 import { formString } from "../shared/forms";
+import {
+  parseSubstitutionInterval,
+  substitutionRhythmLabel,
+  substitutionRhythmOptions,
+} from "../shared/substitutionRhythm";
 
 const statusText = {
   scheduled: "Planlagt",
@@ -70,6 +75,20 @@ export function MatchesPage({ tournamentId }: { tournamentId: string }) {
     const opponent = formString(data, "opponent").trim();
     const pitch = formString(data, "pitch").trim();
     const notes = formString(data, "notes").trim();
+    const rhythmOverride = formString(data, "substitutionRhythm");
+    const substitutionIntervalMs =
+      rhythmOverride === "inherit"
+        ? undefined
+        : rhythmOverride === "adaptive"
+          ? null
+          : parseSubstitutionInterval(rhythmOverride);
+    if (
+      rhythmOverride !== "inherit" &&
+      rhythmOverride !== "adaptive" &&
+      substitutionIntervalMs === undefined
+    ) {
+      throw new Error("Velg en gyldig bytterytme.");
+    }
     const values = {
       ...(scheduledStartLocal ? { scheduledStartLocal } : {}),
       ...(opponent ? { opponent } : {}),
@@ -77,6 +96,12 @@ export function MatchesPage({ tournamentId }: { tournamentId: string }) {
       ...(notes ? { notes } : {}),
       plannedDurationMs: Number(data.get("durationMinutes")) * 60_000,
       playersOnField: Number(data.get("playersOnField")),
+      ...(rhythmOverride === "inherit"
+        ? {}
+        : {
+            substitutionIntervalMs:
+              rhythmOverride === "adaptive" ? null : substitutionIntervalMs!,
+          }),
     };
     if (editing === "new") {
       await run(async () => {
@@ -96,6 +121,11 @@ export function MatchesPage({ tournamentId }: { tournamentId: string }) {
       else delete updated.pitch;
       if (notes) updated.notes = notes;
       else delete updated.notes;
+      if (rhythmOverride === "inherit") {
+        delete updated.substitutionIntervalMs;
+      } else {
+        updated.substitutionIntervalMs = substitutionIntervalMs ?? null;
+      }
       await run(() => repository.updateMatch(updated));
     }
   };
@@ -152,7 +182,7 @@ export function MatchesPage({ tournamentId }: { tournamentId: string }) {
                     <strong>mot {match.opponent || "motstander ikke satt"}</strong>
                     <small>
                       {formatDuration(match.plannedDurationMs)} · {match.playersOnField}{" "}
-                      på banen
+                      på banen · {substitutionRhythmLabel(match, bundle.tournament)}
                     </small>
                   </span>
                   <StatusPill
@@ -301,6 +331,29 @@ export function MatchesPage({ tournamentId }: { tournamentId: string }) {
                   name="notes"
                   defaultValue={editing === "new" ? "" : editing.notes}
                 />
+              </Field>
+              <Field
+                label="Bytterytme"
+                hint="Bruk standarden for spilldagen, eller overstyr bare denne kampen."
+              >
+                <select
+                  name="substitutionRhythm"
+                  defaultValue={
+                    editing === "new" || editing.substitutionIntervalMs === undefined
+                      ? "inherit"
+                      : editing.substitutionIntervalMs === null
+                        ? "adaptive"
+                        : editing.substitutionIntervalMs.toString()
+                  }
+                >
+                  <option value="inherit">Bruk standard for spilldagen</option>
+                  <option value="adaptive">Adaptiv rettferdig rytme</option>
+                  {substitutionRhythmOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
               </Field>
               <div className="dialog__actions">
                 <Button type="submit" variant="primary" disabled={working}>

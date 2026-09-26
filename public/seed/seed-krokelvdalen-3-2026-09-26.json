@@ -1,0 +1,118 @@
+{
+  "format": "fairplay-sideline-seed",
+  "schemaVersion": 1,
+  "tournament": {
+    "id": "tournament-krokelvdalen-3-2026-09-26",
+    "name": "Spilldag 26. september 2026",
+    "date": "2026-09-26",
+    "timezone": "Europe/Oslo",
+    "teamName": "Krokelvdalen 3",
+    "coachLabel": "Michael",
+    "defaultMatchDurationMs": 720000,
+    "defaultPlayersOnField": 3,
+    "defaultMinimumStintMs": 60000,
+    "defaultSubstitutionIntervalMs": 120000,
+    "defaultAlertLeadMs": 10000,
+    "fairnessScope": "tournament"
+  },
+  "players": [
+    {
+      "id": "k3-player-ask",
+      "name": "Ask",
+      "sortOrder": 0,
+      "active": true,
+      "membership": "team"
+    },
+    {
+      "id": "k3-player-henrik",
+      "name": "Henrik",
+      "sortOrder": 1,
+      "active": true,
+      "membership": "team"
+    },
+    {
+      "id": "k3-player-kai",
+      "name": "Kai",
+      "sortOrder": 2,
+      "active": true,
+      "membership": "team"
+    },
+    {
+      "id": "k3-player-kasper",
+      "name": "Kasper",
+      "sortOrder": 3,
+      "active": true,
+      "membership": "team"
+    },
+    {
+      "id": "k3-player-fredrik",
+      "name": "Fredrik",
+      "sortOrder": 4,
+      "active": true,
+      "membership": "team"
+    }
+  ],
+  "matches": [
+    {
+      "id": "k3-match-1-reinen-2",
+      "order": 0,
+      "scheduledStartLocal": "2026-09-26T10:30:00",
+      "opponent": "Reinen 2",
+      "plannedDurationMs": 720000,
+      "playersOnField": 3,
+      "eligiblePlayerIds": [
+        "k3-player-ask",
+        "k3-player-henrik",
+        "k3-player-kai",
+        "k3-player-kasper",
+        "k3-player-fredrik"
+      ]
+    },
+    {
+      "id": "k3-match-2-reinen-3",
+      "order": 1,
+      "scheduledStartLocal": "2026-09-26T10:45:00",
+      "opponent": "Reinen 3",
+      "plannedDurationMs": 720000,
+      "playersOnField": 3,
+      "eligiblePlayerIds": [
+        "k3-player-ask",
+        "k3-player-henrik",
+        "k3-player-kai",
+        "k3-player-kasper",
+        "k3-player-fredrik"
+      ]
+    },
+    {
+      "id": "k3-match-3-ulfstind-1",
+      "order": 2,
+      "scheduledStartLocal": "2026-09-26T11:45:00",
+      "opponent": "Ulfstind 1",
+      "plannedDurationMs": 720000,
+      "playersOnField": 3,
+      "eligiblePlayerIds": [
+        "k3-player-ask",
+        "k3-player-henrik",
+        "k3-player-kai",
+        "k3-player-kasper",
+        "k3-player-fredrik"
+      ]
+    },
+    {
+      "id": "k3-match-4-laksvatn-il",
+      "order": 3,
+      "scheduledStartLocal": "2026-09-26T12:00:00",
+      "opponent": "Laksvatn IL",
+      "plannedDurationMs": 720000,
+      "playersOnField": 3,
+      "eligiblePlayerIds": [
+        "k3-player-ask",
+        "k3-player-henrik",
+        "k3-player-kai",
+        "k3-player-kasper",
+        "k3-player-fredrik"
+      ]
+    }
+  ],
+  "suggestedFirstMatchStarters": ["k3-player-ask", "k3-player-henrik", "k3-player-kai"]
+}

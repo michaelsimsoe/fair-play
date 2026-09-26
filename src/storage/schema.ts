@@ -15,6 +15,7 @@ export const tournamentSchema = z
     defaultMatchDurationMs: milliseconds.positive(),
     defaultPlayersOnField: z.number().int().positive(),
     defaultMinimumStintMs: milliseconds,
+    defaultSubstitutionIntervalMs: milliseconds.positive().optional(),
     defaultAlertLeadMs: milliseconds,
     fairnessScope: z.enum(["tournament", "match"]),
     createdAtWallMs: wallTime,
@@ -104,6 +105,7 @@ export const matchSchema = z
     plannedDurationMs: milliseconds.positive(),
     playersOnField: z.number().int().positive(),
     minimumStintMs: milliseconds,
+    substitutionIntervalMs: milliseconds.positive().nullable().optional(),
     alertLeadMs: milliseconds,
     eligiblePlayerIds: z.array(id),
     selectedStarterIds: z.array(id).optional(),
@@ -370,6 +372,7 @@ export const seedEnvelopeSchema = z
         defaultMatchDurationMs: milliseconds.positive(),
         defaultPlayersOnField: z.number().int().positive(),
         defaultMinimumStintMs: milliseconds,
+        defaultSubstitutionIntervalMs: milliseconds.positive().optional(),
         defaultAlertLeadMs: milliseconds,
         fairnessScope: z.enum(["tournament", "match"]),
       })
@@ -395,6 +398,7 @@ export const seedEnvelopeSchema = z
           pitch: z.string().optional(),
           plannedDurationMs: milliseconds.positive(),
           playersOnField: z.number().int().positive(),
+          substitutionIntervalMs: milliseconds.positive().nullable().optional(),
           eligiblePlayerIds: z.array(id),
         })
         .strict(),

@@ -15,7 +15,7 @@ import {
   type TournamentRecord,
 } from "./schema";
 
-const APP_VERSION = "1.2.0";
+const APP_VERSION = "1.3.0";
 
 export class ImportValidationError extends Error {
   constructor(
@@ -226,6 +226,9 @@ function seedToRecords(seed: SeedEnvelope): {
         ? seed.suggestedFirstMatchStarters?.map((id) => playerIds.get(id)!)
         : undefined,
     minimumStintMs: seed.tournament.defaultMinimumStintMs,
+    ...("substitutionIntervalMs" in match
+      ? { substitutionIntervalMs: match.substitutionIntervalMs }
+      : {}),
     alertLeadMs: seed.tournament.defaultAlertLeadMs,
     status: index === 0 ? "ready" : "scheduled",
     createdAtWallMs: now,

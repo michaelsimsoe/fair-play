@@ -4,6 +4,10 @@ import { useServices } from "../../app/services";
 import { Button, Card, Field, PageHeader } from "../../components/ui";
 import { requestStoragePersistence } from "../../platform/storagePersistence";
 import { formString } from "../shared/forms";
+import {
+  parseSubstitutionInterval,
+  substitutionRhythmOptions,
+} from "../shared/substitutionRhythm";
 
 function localDate(): string {
   const now = new Date();
@@ -23,6 +27,9 @@ export function CreateTournamentPage() {
     const data = new FormData(event.currentTarget);
     try {
       const coachLabel = formString(data, "coachLabel").trim();
+      const defaultSubstitutionIntervalMs = parseSubstitutionInterval(
+        formString(data, "substitutionRhythm"),
+      );
       const tournament = await repository.createTournament({
         name: formString(data, "name").trim(),
         date: formString(data, "date"),
@@ -32,6 +39,7 @@ export function CreateTournamentPage() {
         defaultMatchDurationMs: Number(data.get("durationMinutes") ?? 12) * 60_000,
         defaultPlayersOnField: Number(data.get("playersOnField") ?? 3),
         defaultMinimumStintMs: Number(data.get("minimumStint") ?? 60) * 1000,
+        ...(defaultSubstitutionIntervalMs ? { defaultSubstitutionIntervalMs } : {}),
         defaultAlertLeadMs: Number(data.get("alertLead") ?? 10) * 1000,
         fairnessScope: "tournament",
       });
@@ -110,6 +118,19 @@ export function CreateTournamentPage() {
                 max="120"
                 defaultValue="10"
               />
+            </Field>
+            <Field
+              label="Bytterytme"
+              hint="Fast rytme følger kampklokka. Adaptiv rytme prioriterer helt lik spilletid."
+            >
+              <select name="substitutionRhythm" defaultValue="">
+                <option value="">Adaptiv rettferdig rytme</option>
+                {substitutionRhythmOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
             </Field>
           </div>
           {error && (

@@ -14,6 +14,10 @@ import {
 import type { TournamentRecord } from "../../storage/schema";
 import { useAsyncData } from "../shared/hooks";
 import { formString } from "../shared/forms";
+import {
+  parseSubstitutionInterval,
+  substitutionRhythmOptions,
+} from "../shared/substitutionRhythm";
 
 export function SettingsPage({ tournamentId }: { tournamentId?: string }) {
   const { repository } = useServices();
@@ -76,6 +80,9 @@ export function SettingsPage({ tournamentId }: { tournamentId?: string }) {
         throw new Error("Ugyldig rettferdighetsomfang.");
       }
       const coachLabel = formString(data, "coachLabel").trim();
+      const defaultSubstitutionIntervalMs = parseSubstitutionInterval(
+        formString(data, "substitutionRhythm"),
+      );
       const updatedTournament: TournamentRecord = {
         ...bundle.tournament,
         name: formString(data, "name").trim(),
@@ -88,6 +95,11 @@ export function SettingsPage({ tournamentId }: { tournamentId?: string }) {
         fairnessScope,
         ...(coachLabel ? { coachLabel } : {}),
       };
+      if (defaultSubstitutionIntervalMs) {
+        updatedTournament.defaultSubstitutionIntervalMs = defaultSubstitutionIntervalMs;
+      } else {
+        delete updatedTournament.defaultSubstitutionIntervalMs;
+      }
       if (!coachLabel) delete updatedTournament.coachLabel;
       await repository.updateTournament(updatedTournament);
       setMessage("Spilldagen er oppdatert.");
@@ -317,6 +329,21 @@ export function SettingsPage({ tournamentId }: { tournamentId?: string }) {
                   min="0"
                   defaultValue={bundle.tournament.defaultAlertLeadMs / 1000}
                 />
+              </Field>
+              <Field label="Standard bytterytme">
+                <select
+                  name="substitutionRhythm"
+                  defaultValue={
+                    bundle.tournament.defaultSubstitutionIntervalMs?.toString() ?? ""
+                  }
+                >
+                  <option value="">Adaptiv rettferdig rytme</option>
+                  {substitutionRhythmOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
               </Field>
             </div>
             <Field label="Rettferdighet beregnes for">

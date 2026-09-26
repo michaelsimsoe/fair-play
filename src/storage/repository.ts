@@ -31,6 +31,7 @@ export type CreateTournamentInput = {
   defaultMatchDurationMs: number;
   defaultPlayersOnField: number;
   defaultMinimumStintMs: number;
+  defaultSubstitutionIntervalMs?: number;
   defaultAlertLeadMs: number;
   fairnessScope: "tournament" | "match";
 };
@@ -310,6 +311,7 @@ export class FairPlayRepository {
       notes?: string;
       plannedDurationMs?: number;
       playersOnField?: number;
+      substitutionIntervalMs?: number | null;
     },
   ): Promise<MatchRecord> {
     return this.database.transaction(
@@ -332,6 +334,9 @@ export class FairPlayRepository {
             values.plannedDurationMs ?? tournament.defaultMatchDurationMs,
           playersOnField: values.playersOnField ?? tournament.defaultPlayersOnField,
           minimumStintMs: tournament.defaultMinimumStintMs,
+          ...("substitutionIntervalMs" in values
+            ? { substitutionIntervalMs: values.substitutionIntervalMs }
+            : {}),
           alertLeadMs: tournament.defaultAlertLeadMs,
           eligiblePlayerIds: teamPlayers.map((player) => player.id),
           status: "scheduled",

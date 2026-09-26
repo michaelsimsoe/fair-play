@@ -19,6 +19,10 @@ import type { ActiveMatchJournalRecord, MatchEventRecord } from "../../storage/s
 import { calculateTournamentTotals, loadMatchData, playerName } from "../shared/data";
 import { useAsyncData } from "../shared/hooks";
 import { formString } from "../shared/forms";
+import {
+  effectiveSubstitutionInterval,
+  substitutionRhythmLabel,
+} from "../shared/substitutionRhythm";
 
 export function PreMatchPage({ matchId }: { matchId: string }) {
   const { repository } = useServices();
@@ -93,6 +97,10 @@ function PreMatchReady({ data }: { data: ReadyData }) {
   const [addingGuest, setAddingGuest] = useState(false);
   const [error, setError] = useState<string>();
   const [audioMessage, setAudioMessage] = useState<string>();
+  const fixedSubstitutionRhythmMs = effectiveSubstitutionInterval(
+    match,
+    bundle.tournament,
+  );
 
   const balances = Object.fromEntries(
     eligiblePlayers.map((player) => [
@@ -151,6 +159,7 @@ function PreMatchReady({ data }: { data: ReadyData }) {
           minimumPreferredStintMs: match.minimumStintMs,
           minimumPreferredBenchRestMs: DEFAULT_MINIMUM_BENCH_REST_MS,
           compensationToleranceMs: DEFAULT_COMPENSATION_TOLERANCE_MS,
+          ...(fixedSubstitutionRhythmMs ? { fixedSubstitutionRhythmMs } : {}),
           preferredChangeIntervalMs: Math.floor(
             match.plannedDurationMs / availableIds.length,
           ),
@@ -378,7 +387,7 @@ function PreMatchReady({ data }: { data: ReadyData }) {
       <PageHeader
         eyebrow={`${formatMatchTime(match.scheduledStartLocal)}${match.pitch ? ` · Bane ${match.pitch}` : ""}`}
         title={`mot ${match.opponent || "motstander"}`}
-        subtitle={`${formatDuration(match.plannedDurationMs)} · ${match.playersOnField} spillere på banen`}
+        subtitle={`${formatDuration(match.plannedDurationMs)} · ${match.playersOnField} spillere på banen · ${substitutionRhythmLabel(match, bundle.tournament)}`}
         onBack={() =>
           navigate({ name: "tournament", tournamentId: bundle.tournament.id })
         }

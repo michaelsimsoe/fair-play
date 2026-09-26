@@ -155,6 +155,21 @@ export function HomePage({ offlineReady }: { offlineReady: boolean }) {
 
       <Card className="card--accent">
         <p className="eyebrow">Klar spilldag</p>
+        <h2>Krokelvdalen 3 · 26. september</h2>
+        <p className="muted">5 spillere · 4 kamper · fast bytterytme 02:00</p>
+        <Button
+          full
+          disabled={working}
+          onClick={() =>
+            void loadBundledMatchDay("seed-krokelvdalen-3-2026-09-26.json")
+          }
+        >
+          {working ? "Laster …" : "Last inn Krokelvdalen 3"}
+        </Button>
+      </Card>
+
+      <Card className="card--accent">
+        <p className="eyebrow">Klar spilldag</p>
         <h2>Storm BLÅ · 12. september</h2>
         <p className="muted">5 spillere · 4 kamper · første kamp 11:30 på Bane 1</p>
         <Button

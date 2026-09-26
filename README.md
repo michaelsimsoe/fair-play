@@ -15,6 +15,10 @@ for the rest of the day. The coach can preserve their existing difference for
 gradual compensation capped at one extra minute per match, or waive it and
 continue from neutral.
 
+Match days can use an optional fixed substitution rhythm, such as every two
+minutes on the match clock. Delayed confirmations keep the original clock grid
+while the fairness planner may still recommend an earlier change when necessary.
+
 The interface is Norwegian Bokmål. The implementation and tests are English.
 
 ## Run locally
