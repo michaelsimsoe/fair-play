@@ -11,7 +11,7 @@ import {
   DEFAULT_COMPENSATION_TOLERANCE_MS,
   DEFAULT_MINIMUM_BENCH_REST_MS,
   DEFAULT_RETURN_COMPENSATION_CAP_MS,
-  planRecommendation,
+  planMatch,
   playerId,
   type PlayerId,
 } from "../../domain";
@@ -134,10 +134,10 @@ function PreMatchReady({ data }: { data: ReadyData }) {
         ),
       ]),
   );
-  const recommendation =
+  const planningResult =
     starterIds.length === match.playersOnField &&
     availableIds.length >= match.playersOnField
-      ? planRecommendation({
+      ? planMatch({
           nowElapsedMs: 0,
           plannedEndElapsedMs: match.plannedDurationMs,
           fieldSlots: match.playersOnField,
@@ -165,6 +165,7 @@ function PreMatchReady({ data }: { data: ReadyData }) {
           ),
         })
       : undefined;
+  const recommendation = planningResult?.recommendation;
 
   const toggleAvailability = async (id: string) => {
     if (availabilityInFlight.current || startInFlight.current) return;
@@ -198,11 +199,18 @@ function PreMatchReady({ data }: { data: ReadyData }) {
         const explicitUnavailableMatchIds = player.explicitUnavailableMatchIds.filter(
           (matchId) => matchId !== match.id,
         );
-        const participationPauses = player.participationPauses.map((pause) =>
-          pause.matchIds.includes(match.id)
-            ? { ...pause, availabilityActive: false, matchIds: [] }
-            : pause,
-        );
+        const participationPauses = player.participationPauses.map((pause) => {
+          if (!pause.matchIds.includes(match.id)) return pause;
+          const matchIds = pause.matchIds.filter(
+            (pausedMatchId) => pausedMatchId !== match.id,
+          );
+          return {
+            ...pause,
+            matchIds,
+            resumedMatchIds: [...new Set([...pause.resumedMatchIds, match.id])],
+            availabilityActive: pause.scope !== "current" || matchIds.length > 0,
+          };
+        });
         const updated = {
           ...player,
           explicitUnavailableMatchIds,
@@ -445,6 +453,55 @@ function PreMatchReady({ data }: { data: ReadyData }) {
           </Button>
         </form>
       </Card>
+
+      {planningResult && planningResult.preview.length > 0 && (
+        <Card>
+          <div className="split-heading">
+            <h2>Fast bytteplan</h2>
+            <StatusPill>{planningResult.preview.length} bytter</StatusPill>
+          </div>
+          <p className="muted">
+            Planen ligger fast på kampklokka. Bare fremtidige navn endres hvis
+            virkeligheten krever det.
+          </p>
+          <ol className="substitution-plan">
+            {planningResult.preview.map((step) => (
+              <li key={`${step.dueAtElapsedMs}-${step.swaps[0]?.incomingPlayerId}`}>
+                <time>{formatDuration(step.dueAtElapsedMs)}</time>
+                <span>
+                  {step.swaps
+                    .map(
+                      (swap) =>
+                        `${playerName(players, swap.incomingPlayerId)} inn · ${playerName(players, swap.outgoingPlayerId)} ut`,
+                    )
+                    .join(" + ")}
+                </span>
+              </li>
+            ))}
+          </ol>
+          {recommendation?.diagnostics.fixedRhythm && (
+            <div className="interval-allocation">
+              <h3>Planlagte intervaller</h3>
+              <div>
+                {eligiblePlayers
+                  .filter((player) => availableIds.includes(player.id))
+                  .map((player) => {
+                    const count =
+                      recommendation.diagnostics.fixedRhythm
+                        ?.plannedIntervalCountByPlayer[playerId(player.id)] ?? 0;
+                    return (
+                      <span key={player.id}>
+                        <strong>{player.name}</strong> {count} ·{" "}
+                        {formatDuration(count * (fixedSubstitutionRhythmMs ?? 0))}
+                      </span>
+                    );
+                  })}
+              </div>
+              <p>Forskjell på ett intervall er forventet og roteres mellom kampene.</p>
+            </div>
+          )}
+        </Card>
+      )}
 
       <Card>
         <div className="split-heading">

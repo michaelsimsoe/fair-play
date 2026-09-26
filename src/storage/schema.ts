@@ -42,7 +42,11 @@ const playerBase = {
         originMatchId: id,
         scope: z.enum(["current", "through-next", "rest-day"]),
         matchIds: z.array(id),
+        resumedMatchIds: z.array(id).default([]),
         balanceTreatment: z.enum(["preserve", "waive"]),
+        reason: z
+          .enum(["needs-break", "lost-motivation", "injured", "other"])
+          .optional(),
         availabilityActive: z.boolean(),
         compensationActive: z.boolean(),
       })
@@ -125,6 +129,13 @@ const eventBase = {
   schemaVersion: z.literal(1),
 };
 
+const plannedSwapSchema = z
+  .object({
+    outgoingPlayerId: id,
+    incomingPlayerId: id,
+  })
+  .strict();
+
 export const matchEventSchema = z.discriminatedUnion("type", [
   z
     .object({
@@ -151,6 +162,18 @@ export const matchEventSchema = z.discriminatedUnion("type", [
           lineupBeforeIds: z.array(id).optional(),
           lineupAfterIds: z.array(id).optional(),
           recommendationId: id.optional(),
+          fixedRhythmPreview: z
+            .array(
+              z
+                .object({
+                  dueAtElapsedMs: milliseconds,
+                  lineupBeforeIds: z.array(id),
+                  lineupAfterIds: z.array(id),
+                  swaps: z.array(plannedSwapSchema).min(1),
+                })
+                .strict(),
+            )
+            .optional(),
         })
         .strict(),
     })
@@ -178,6 +201,9 @@ export const matchEventSchema = z.discriminatedUnion("type", [
           previousAvailable: z.boolean().optional(),
           available: z.boolean(),
           reason: z.string().optional(),
+          pauseReason: z
+            .enum(["needs-break", "lost-motivation", "injured", "other"])
+            .optional(),
           pauseScope: z.enum(["current", "through-next", "rest-day"]).optional(),
           balanceTreatment: z.enum(["preserve", "waive"]).optional(),
           previousUnavailableMatchIds: z.array(id).optional(),

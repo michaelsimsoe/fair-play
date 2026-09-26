@@ -19,6 +19,11 @@ Match days can use an optional fixed substitution rhythm, such as every two
 minutes on the match clock. Delayed confirmations keep the original clock grid
 while the fairness planner may still recommend an earlier change when necessary.
 
+Fixed-rhythm matches use whole substitution intervals and accept a one-interval
+fairness band. The full stable list is visible before kickoff; manual child-state
+changes rewrite only future names. Resting children remain visible with a one-tap
+return control.
+
 The interface is Norwegian Bokmål. The implementation and tests are English.
 
 ## Run locally

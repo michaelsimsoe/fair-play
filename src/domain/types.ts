@@ -79,6 +79,11 @@ export type FutureAllocationCapDiagnostics = Readonly<{
   relaxations: readonly FutureAllocationCapRelaxation[];
 }>;
 
+export type FixedRhythmDiagnostics = Readonly<{
+  plannedIntervalCountByPlayer: Readonly<Record<PlayerId, number>>;
+  intervalBalanceWithinOne: boolean;
+}>;
+
 export type Recommendation = Readonly<{
   id: string;
   calculatedAtElapsedMs: number;
@@ -99,5 +104,6 @@ export type Recommendation = Readonly<{
     expectedSubstitutionCount: number;
     shortStintWarnings: readonly PlayerId[];
     futureAllocationCaps: FutureAllocationCapDiagnostics;
+    fixedRhythm?: FixedRhythmDiagnostics;
   }>;
 }>;

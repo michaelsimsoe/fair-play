@@ -76,7 +76,10 @@ function recomputeParticipationPauses(
                 : [origin.id]),
               ...futurePlayable.map((match) => match.id),
             ];
-    return { ...pause, matchIds };
+    return {
+      ...pause,
+      matchIds: matchIds.filter((matchId) => !pause.resumedMatchIds.includes(matchId)),
+    };
   });
   return {
     ...player,

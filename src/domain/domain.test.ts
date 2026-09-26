@@ -556,6 +556,252 @@ describe("planner", () => {
     expect(result.preview.slice(0, 5).map((step) => step.dueAtElapsedMs)).toEqual([
       120_000, 240_000, 360_000, 480_000, 600_000,
     ]);
+    expect(result.diagnostics.fixedRhythm).toEqual({
+      plannedIntervalCountByPlayer: {
+        [ids[0]!]: 4,
+        [ids[1]!]: 4,
+        [ids[2]!]: 4,
+        [ids[3]!]: 3,
+        [ids[4]!]: 3,
+      },
+      intervalBalanceWithinOne: true,
+    });
+    expect(result.recommendation?.projectedActualMsByPlayer).toEqual({
+      [ids[0]!]: 480_000,
+      [ids[1]!]: 480_000,
+      [ids[2]!]: 480_000,
+      [ids[3]!]: 360_000,
+      [ids[4]!]: 360_000,
+    });
+  });
+
+  it("uses the child-first cyclic ring for equal five-player fixed rhythms", () => {
+    const ask = playerId("Ask");
+    const henrik = playerId("Henrik");
+    const kai = playerId("Kai");
+    const kasper = playerId("Kasper");
+    const fredrik = playerId("Fredrik");
+    const ids = [ask, henrik, kai, kasper, fredrik];
+    const starters = [ask, henrik, kai];
+    const result = planMatch({
+      nowElapsedMs: 0,
+      plannedEndElapsedMs: 720_000,
+      fieldSlots: 3,
+      orderedAvailablePlayerIds: ids,
+      currentLineupIds: starters,
+      balancesMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+      currentFieldStintMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+      currentBenchStintMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+      minimumPreferredStintMs: 60_000,
+      fixedSubstitutionRhythmMs: 120_000,
+    });
+
+    expect(result.preview.map((step) => step.swaps)).toEqual([
+      [{ outgoingPlayerId: ask, incomingPlayerId: kasper }],
+      [{ outgoingPlayerId: henrik, incomingPlayerId: fredrik }],
+      [{ outgoingPlayerId: kai, incomingPlayerId: ask }],
+      [{ outgoingPlayerId: kasper, incomingPlayerId: henrik }],
+      [{ outgoingPlayerId: fredrik, incomingPlayerId: kai }],
+    ]);
+    const lineups = [starters, ...result.preview.map((step) => step.lineupAfterIds)];
+    for (const id of ids) {
+      let currentBenchIntervals = 0;
+      let maximumBenchIntervals = 0;
+      for (const lineup of lineups) {
+        currentBenchIntervals = lineup.includes(id) ? 0 : currentBenchIntervals + 1;
+        maximumBenchIntervals = Math.max(maximumBenchIntervals, currentBenchIntervals);
+      }
+      expect(maximumBenchIntervals).toBeLessThanOrEqual(2);
+    }
+  });
+
+  it("uses fixed interval counts for the established four-player rotation", () => {
+    const result = planMatch({
+      nowElapsedMs: 0,
+      plannedEndElapsedMs: 720_000,
+      fieldSlots: 3,
+      orderedAvailablePlayerIds: players,
+      currentLineupIds: [ask, ali, fredrik],
+      balancesMsByPlayer: { [ask]: 0, [ali]: 0, [fredrik]: 0, [lucas]: 0 },
+      currentFieldStintMsByPlayer: { [ask]: 0, [ali]: 0, [fredrik]: 0, [lucas]: 0 },
+      currentBenchStintMsByPlayer: { [ask]: 0, [ali]: 0, [fredrik]: 0, [lucas]: 0 },
+      minimumPreferredStintMs: 60_000,
+      fixedSubstitutionRhythmMs: 120_000,
+    });
+
+    expect(result.diagnostics.fixedRhythm?.plannedIntervalCountByPlayer).toEqual({
+      [ask]: 5,
+      [ali]: 5,
+      [fredrik]: 4,
+      [lucas]: 4,
+    });
+    expect(result.preview.every((step) => step.swaps.length === 1)).toBe(true);
+  });
+
+  it("gives a carried-debt player an extra fixed slot without uneven catch-up", () => {
+    const ids = ["p1", "p2", "p3", "p4", "p5"].map(playerId);
+    const result = planMatch({
+      nowElapsedMs: 0,
+      plannedEndElapsedMs: 720_000,
+      fieldSlots: 3,
+      orderedAvailablePlayerIds: ids,
+      currentLineupIds: ids.slice(0, 3),
+      balancesMsByPlayer: {
+        [ids[0]!]: 10_000,
+        [ids[1]!]: 10_000,
+        [ids[2]!]: 10_000,
+        [ids[3]!]: 10_000,
+        [ids[4]!]: -1_000_000,
+      },
+      currentFieldStintMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+      currentBenchStintMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+      minimumPreferredStintMs: 60_000,
+      fixedSubstitutionRhythmMs: 120_000,
+    });
+
+    const counts = result.diagnostics.fixedRhythm?.plannedIntervalCountByPlayer;
+    expect(counts?.[ids[4]!]).toBe(4);
+    expect(Math.max(...Object.values(counts ?? {}))).toBe(4);
+    expect(Math.min(...Object.values(counts ?? {}))).toBe(3);
+    expect(result.recommendation?.projectedActualMsByPlayer[ids[4]!]).toBe(480_000);
+  });
+
+  it("honors future actual caps while assigning fixed interval slots", () => {
+    const ids = ["p1", "p2", "p3", "p4", "p5"].map(playerId);
+    const result = planMatch({
+      nowElapsedMs: 0,
+      plannedEndElapsedMs: 720_000,
+      fieldSlots: 3,
+      orderedAvailablePlayerIds: ids,
+      currentLineupIds: ids.slice(0, 3),
+      balancesMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+      maximumFutureActualMsByPlayer: { [ids[0]!]: 0 },
+      currentFieldStintMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+      currentBenchStintMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+      minimumPreferredStintMs: 60_000,
+      fixedSubstitutionRhythmMs: 120_000,
+    });
+
+    expect(result.recommendation?.dueAtElapsedMs).toBe(0);
+    expect(result.recommendation?.projectedActualMsByPlayer[ids[0]!]).toBe(0);
+    expect(result.diagnostics.futureAllocationCaps.capsFeasible).toBe(true);
+    expect(result.diagnostics.fixedRhythm?.plannedIntervalCountByPlayer[ids[0]!]).toBe(
+      0,
+    );
+  });
+
+  it("keeps an intended fixed rotation after a delayed suggested confirmation", () => {
+    const ids = ["p1", "p2", "p3", "p4", "p5"].map(playerId);
+    const input = {
+      nowElapsedMs: 0,
+      plannedEndElapsedMs: 720_000,
+      fieldSlots: 3,
+      orderedAvailablePlayerIds: ids,
+      currentLineupIds: ids.slice(0, 3),
+      balancesMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+      currentFieldStintMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+      currentBenchStintMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+      minimumPreferredStintMs: 60_000,
+      fixedSubstitutionRhythmMs: 120_000,
+    };
+    const original = planMatch(input);
+    const intended = original.preview.find((step) => step.dueAtElapsedMs === 240_000);
+    const delayed = planMatch({
+      ...input,
+      nowElapsedMs: 145_000,
+      previousPreview: original.preview,
+      currentLineupIds: original.preview[0]!.lineupAfterIds,
+      balancesMsByPlayer: {
+        [ids[0]!]: 58_000,
+        [ids[1]!]: 58_000,
+        [ids[2]!]: 58_000,
+        [ids[3]!]: -87_000,
+        [ids[4]!]: -87_000,
+      },
+      actualMsByPlayer: {
+        [ids[0]!]: 145_000,
+        [ids[1]!]: 145_000,
+        [ids[2]!]: 145_000,
+        [ids[3]!]: 0,
+        [ids[4]!]: 0,
+      },
+      idealMsByPlayer: Object.fromEntries(ids.map((id) => [id, 87_000])),
+      currentFieldStintMsByPlayer: {
+        [ids[0]!]: 0,
+        [ids[1]!]: 145_000,
+        [ids[2]!]: 145_000,
+        [ids[3]!]: 0,
+        [ids[4]!]: 145_000,
+      },
+      currentBenchStintMsByPlayer: {
+        [ids[0]!]: 0,
+        [ids[1]!]: 0,
+        [ids[2]!]: 0,
+        [ids[3]!]: 0,
+        [ids[4]!]: 145_000,
+      },
+    });
+
+    expect(delayed.recommendation?.dueAtElapsedMs).toBe(240_000);
+    expect(delayed.recommendation?.swaps).toEqual(intended?.swaps);
+  });
+
+  it("replans a manual fixed-grid lineup without moving future boundaries", () => {
+    const ids = ["p1", "p2", "p3", "p4", "p5"].map(playerId);
+    const result = planMatch({
+      nowElapsedMs: 240_000,
+      plannedEndElapsedMs: 720_000,
+      fieldSlots: 3,
+      orderedAvailablePlayerIds: ids,
+      currentLineupIds: [ids[0]!, ids[1]!, ids[4]!],
+      balancesMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+      currentFieldStintMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+      currentBenchStintMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+      minimumPreferredStintMs: 60_000,
+      fixedSubstitutionRhythmMs: 120_000,
+      manualDeviation: true,
+    });
+
+    expect(result.recommendation?.reasons).toContain("manual-deviation");
+    expect(result.preview.map((step) => step.dueAtElapsedMs)).toEqual([
+      360_000, 480_000, 600_000,
+    ]);
+    for (const step of result.preview) {
+      expect(step.lineupAfterIds).toHaveLength(3);
+      expect(new Set(step.lineupAfterIds).size).toBe(3);
+      expect(step.lineupAfterIds.every((id) => ids.includes(id))).toBe(true);
+    }
+  });
+
+  it("excludes unavailable players from fixed interval debt and allocations", () => {
+    const unavailable = playerId("unavailable");
+    const available = [ask, ali, fredrik, lucas];
+    const result = planMatch({
+      nowElapsedMs: 0,
+      plannedEndElapsedMs: 720_000,
+      fieldSlots: 3,
+      orderedAvailablePlayerIds: available,
+      currentLineupIds: [ask, ali, fredrik],
+      balancesMsByPlayer: {
+        [ask]: 0,
+        [ali]: 0,
+        [fredrik]: 0,
+        [lucas]: 0,
+        [unavailable]: -1_000_000,
+      },
+      currentFieldStintMsByPlayer: { [ask]: 0, [ali]: 0, [fredrik]: 0, [lucas]: 0 },
+      currentBenchStintMsByPlayer: { [ask]: 0, [ali]: 0, [fredrik]: 0, [lucas]: 0 },
+      minimumPreferredStintMs: 60_000,
+      fixedSubstitutionRhythmMs: 120_000,
+      availabilityChanged: true,
+    });
+
+    expect(
+      result.diagnostics.fixedRhythm?.plannedIntervalCountByPlayer,
+    ).not.toHaveProperty(unavailable);
+    expect(result.recommendation?.projectedActualMsByPlayer).not.toHaveProperty(
+      unavailable,
+    );
   });
 
   it("anchors fixed rhythm after delayed, early, and exact-boundary confirmations", () => {
@@ -658,6 +904,53 @@ describe("planner", () => {
       expect(new Set(step.lineupAfterIds).size).toBe(3);
       expect(step.lineupAfterIds.every((id) => ids.includes(id))).toBe(true);
     }
+  });
+
+  it("keeps randomized fixed-grid plans deterministic with valid capacity and lineups", () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 4, max: 8 }),
+        fc.integer({ min: 1, max: 8 }),
+        fc.array(fc.integer({ min: -100_000, max: 100_000 }), {
+          minLength: 4,
+          maxLength: 8,
+        }),
+        (playerCount, intervalCount, balances) => {
+          const ids = Array.from({ length: playerCount }, (_, index) =>
+            playerId(`fixed-random-${index}`),
+          );
+          const fieldSlots = Math.min(3, playerCount - 1);
+          const input = {
+            nowElapsedMs: 0,
+            plannedEndElapsedMs: intervalCount * 1_000,
+            fieldSlots,
+            orderedAvailablePlayerIds: ids,
+            currentLineupIds: ids.slice(0, fieldSlots),
+            balancesMsByPlayer: Object.fromEntries(
+              ids.map((id, index) => [id, balances[index % balances.length]!]),
+            ),
+            currentFieldStintMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+            currentBenchStintMsByPlayer: Object.fromEntries(ids.map((id) => [id, 0])),
+            minimumPreferredStintMs: 1,
+            fixedSubstitutionRhythmMs: 1_000,
+          };
+          const first = planMatch(input);
+          expect(planMatch(input)).toEqual(first);
+          const counts =
+            first.diagnostics.fixedRhythm?.plannedIntervalCountByPlayer ?? {};
+          expect(Object.values(counts).reduce((sum, count) => sum + count, 0)).toBe(
+            fieldSlots * intervalCount,
+          );
+          for (const step of first.preview) {
+            expect(step.lineupAfterIds).toHaveLength(fieldSlots);
+            expect(new Set(step.lineupAfterIds).size).toBe(fieldSlots);
+            expect(step.lineupAfterIds.every((id) => ids.includes(id))).toBe(true);
+            expect(step.dueAtElapsedMs % 1_000).toBe(0);
+          }
+        },
+      ),
+      { numRuns: 100 },
+    );
   });
 
   it("does not recommend a change when every available player is on field", () => {

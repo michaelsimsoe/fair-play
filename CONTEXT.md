@@ -56,6 +56,10 @@ _Avoid_: Error, failure
 A small acceptable projected difference that should not trigger an otherwise unnecessary short stint. The current tolerance is 30 seconds; unresolved team-player differences carry into later matches.
 _Avoid_: Grace period, ignored time
 
+**Fairness band**:
+The acceptable spread of whole substitution intervals among available players. A one-interval difference is normal and preferable to irregular or disruptive substitutions.
+_Avoid_: Exact equality, perfect leveling
+
 **Bench rest**:
 An uninterrupted interval during which an available player is off the field. Its preferred length is 60 seconds, independent of the on-field stint setting, and prevents an ordinary manual substitution from immediately cycling the same player back in.
 _Avoid_: Penalty, timeout

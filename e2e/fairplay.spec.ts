@@ -159,13 +159,17 @@ test("manual deviation changes the real lineup and audited undo restores it", as
 
   await page.getByRole("button", { name: "Bytt ut Fredrik H" }).click();
   const holdOutDialog = page.getByRole("dialog", { name: "Manuelt bytte" });
-  await holdOutDialog
-    .getByRole("checkbox", { name: /Skadet \/ trenger pause/ })
-    .check();
+  await holdOutDialog.getByRole("button", { name: "Mistet motivasjonen" }).click();
   await holdOutDialog.getByRole("button", { name: "REGISTRER BYTTE" }).click();
   await expect(
-    page.locator(".live-player").filter({ hasText: "Fredrik H" }),
-  ).toHaveCount(0);
+    page.locator(".paused-player").filter({ hasText: "Fredrik H" }),
+  ).toContainText("Mistet motivasjonen");
+  await expect(
+    page
+      .locator(".paused-player")
+      .filter({ hasText: "Fredrik H" })
+      .getByRole("button", { name: "Klar igjen" }),
+  ).toBeVisible();
   await page.getByRole("button", { name: "Flere valg" }).click();
   const actions = page.getByRole("dialog", { name: "Kampvalg" });
   await expect(
@@ -192,6 +196,11 @@ test("an injury pause carries through the next match without creating catch-up t
     .selectOption({ label: "Denne kampen + neste kamp" });
   await expect(dialog.getByLabel("Eksisterende avvik")).toHaveValue("preserve");
   await dialog.getByRole("button", { name: "REGISTRER BYTTE" }).click();
+  const paused = page.locator(".paused-player").filter({ hasText: "Fredrik H" });
+  await paused.getByRole("button", { name: "Klar igjen" }).click();
+  await expect(
+    page.locator(".live-player--bench").filter({ hasText: "Fredrik H" }),
+  ).toBeVisible();
   await page.clock.fastForward(660_000);
   await page.getByRole("button", { name: "AVSLUTT KAMP" }).click();
   await page.getByRole("button", { name: "Neste kamp" }).click();
@@ -200,6 +209,23 @@ test("an injury pause carries through the next match without creating catch-up t
   await expect(fredrik).toContainText("Deltakelsespause");
   await expect(page.getByText("3 tilgjengelige")).toBeVisible();
   await expect(page.getByText("3 av 3 valgt")).toBeVisible();
+});
+
+test("a resting player remains visible and returns with one tap", async ({ page }) => {
+  await openWithClock(page);
+  await startFirstSeedMatch(page);
+
+  await page.getByRole("button", { name: "Bytt ut Fredrik H" }).click();
+  const dialog = page.getByRole("dialog", { name: "Manuelt bytte" });
+  await dialog.getByRole("button", { name: "Trenger pause" }).click();
+  await dialog.getByRole("button", { name: "REGISTRER BYTTE" }).click();
+
+  const paused = page.locator(".paused-player").filter({ hasText: "Fredrik H" });
+  await expect(paused).toContainText("Trenger pause");
+  await paused.getByRole("button", { name: "Klar igjen" }).click();
+  await expect(
+    page.locator(".live-player--bench").filter({ hasText: "Fredrik H" }),
+  ).toBeVisible();
 });
 
 test("the coach can waive pre-injury balance instead of carrying it forward", async ({
@@ -337,14 +363,31 @@ test("loads Krokelvdalen 3 with a fixed two-minute rhythm", async ({ page }) => 
   await expect(page.getByText("10:30 · 12:00")).toBeVisible();
   await expect(page.getByText("mot Reinen 2")).toBeVisible();
   await page.getByRole("button", { name: "GJØR KLAR KAMP" }).click();
+  const plan = page.locator(".substitution-plan");
+  for (const time of ["02:00", "04:00", "06:00", "08:00", "10:00"]) {
+    await expect(plan.getByText(time, { exact: true })).toBeVisible();
+  }
+  const allocation = page.locator(".interval-allocation");
+  await expect(allocation.locator("span")).toHaveCount(5);
+  await expect(allocation.getByText(/Ask 4 · 08:00/)).toBeVisible();
+  await expect(allocation.getByText(/Kasper 3 · 06:00/)).toBeVisible();
   await page.getByRole("button", { name: "START KAMP" }).click();
   await expect(page.getByText("Neste bytte om 02:00")).toBeVisible();
   await page.clock.fastForward(145_000);
   await expect(
     page.getByText("+00:25 · Ta byttet når spillet tillater det"),
   ).toBeVisible();
+  await expect(
+    page.getByText(/Deretter 04:00 · Fredrik inn \/ Henrik ut/),
+  ).toBeVisible();
   await page.getByRole("button", { name: "BYTTET ER GJORT" }).click();
   await expect(page.getByText("Neste bytte om 01:35")).toBeVisible();
+  await expect(page.getByText(/Fredrik\s+INN/i)).toBeVisible();
+  await expect(page.getByText(/Henrik\s+UT/i)).toBeVisible();
+  await page.reload();
+  await expect(page.getByText("Neste bytte om 01:35")).toBeVisible();
+  await expect(page.getByText(/Fredrik\s+INN/i)).toBeVisible();
+  await expect(page.getByText(/Henrik\s+UT/i)).toBeVisible();
 });
 
 test("overrides the fixed rhythm for one match", async ({ page }) => {

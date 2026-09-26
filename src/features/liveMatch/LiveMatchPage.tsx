@@ -20,10 +20,10 @@ import {
   DEFAULT_COMPENSATION_TOLERANCE_MS,
   DEFAULT_MINIMUM_BENCH_REST_MS,
   DEFAULT_RETURN_COMPENSATION_CAP_MS,
-  planRecommendation,
+  planMatch,
   playerId,
+  type PlannerPreviewStep,
   type PlayerId,
-  type Recommendation,
 } from "../../domain";
 import { browserClockSource } from "../../platform/browserClockSource";
 import { vibrateForChange } from "../../platform/vibration";
@@ -59,6 +59,37 @@ type LoadedLiveData = Awaited<ReturnType<typeof loadMatchData>> & {
 };
 
 type BalanceTreatment = "preserve" | "waive";
+type ManualChangeReason = "ordinary" | "needs-break" | "lost-motivation" | "injured";
+
+function retainedPreviewFromEvents(
+  events: readonly MatchEventRecord[],
+): readonly PlannerPreviewStep[] {
+  const voidedIds = new Set(
+    events.flatMap((event) =>
+      event.type === "EVENT_VOIDED" ? [event.payload.targetEventId] : [],
+    ),
+  );
+  const latest = [...events]
+    .reverse()
+    .find(
+      (event): event is Extract<MatchEventRecord, { type: "SUBSTITUTION_CONFIRMED" }> =>
+        event.type === "SUBSTITUTION_CONFIRMED" &&
+        !voidedIds.has(event.id) &&
+        event.source === "suggested-confirmation" &&
+        Boolean(event.payload.fixedRhythmPreview?.length),
+    );
+  return (
+    latest?.payload.fixedRhythmPreview?.map((step) => ({
+      dueAtElapsedMs: step.dueAtElapsedMs,
+      lineupBeforeIds: step.lineupBeforeIds.map(playerId),
+      lineupAfterIds: step.lineupAfterIds.map(playerId),
+      swaps: step.swaps.map((swap) => ({
+        outgoingPlayerId: playerId(swap.outgoingPlayerId),
+        incomingPlayerId: playerId(swap.incomingPlayerId),
+      })),
+    })) ?? []
+  );
+}
 
 export function LiveMatchPage({ matchId }: { matchId: string }) {
   const { repository } = useServices();
@@ -154,6 +185,7 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
     useState<ParticipationPauseScope>("none");
   const [manualBalanceTreatment, setManualBalanceTreatment] =
     useState<BalanceTreatment>("preserve");
+  const [manualReason, setManualReason] = useState<ManualChangeReason>("ordinary");
   const [projectionOpen, setProjectionOpen] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [availabilityAction, setAvailabilityAction] = useState<{
@@ -170,6 +202,9 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
   const trackerRef = useRef(new ThresholdCrossingTracker());
   const previousElapsedRef = useRef(elapsedMs);
   const actionInFlightRef = useRef(false);
+  const [previousPreview, setPreviousPreview] = useState<readonly PlannerPreviewStep[]>(
+    () => retainedPreviewFromEvents(data.events),
+  );
   const { tournamentBundle: bundle, priorTotals } = data;
 
   const projection = useMemo(
@@ -181,7 +216,7 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
     [match, events, planningElapsedMs],
   );
 
-  const recommendation = useMemo<Recommendation | undefined>(() => {
+  const planningResult = useMemo(() => {
     const availableIds = players
       .filter((player) =>
         planningProjection.currentlyAvailableIds.includes(playerId(player.id)),
@@ -263,20 +298,27 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
         ),
       ]),
     ) as Record<PlayerId, number>;
+    const voidedIds = new Set(
+      events.flatMap((event) =>
+        event.type === "EVENT_VOIDED" ? [event.payload.targetEventId] : [],
+      ),
+    );
     const latestPlanningEvent = [...events]
       .reverse()
-      .find((event) =>
-        [
-          "SUBSTITUTION_CONFIRMED",
-          "PLAYER_AVAILABILITY_CHANGED",
-          "LINEUP_SYNCHRONIZED",
-        ].includes(event.type),
+      .find(
+        (event) =>
+          !voidedIds.has(event.id) &&
+          [
+            "SUBSTITUTION_CONFIRMED",
+            "PLAYER_AVAILABILITY_CHANGED",
+            "LINEUP_SYNCHRONIZED",
+          ].includes(event.type),
       );
     const fixedSubstitutionRhythmMs = effectiveSubstitutionInterval(
       match,
       bundle.tournament,
     );
-    return planRecommendation({
+    return planMatch({
       nowElapsedMs: planningElapsedMs,
       plannedEndElapsedMs: match.plannedDurationMs,
       fieldSlots: match.playersOnField,
@@ -298,6 +340,7 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
       minimumPreferredBenchRestMs: DEFAULT_MINIMUM_BENCH_REST_MS,
       compensationToleranceMs: DEFAULT_COMPENSATION_TOLERANCE_MS,
       ...(fixedSubstitutionRhythmMs ? { fixedSubstitutionRhythmMs } : {}),
+      previousPreview,
       preferredChangeIntervalMs: Math.floor(
         match.plannedDurationMs / availableIds.length,
       ),
@@ -316,7 +359,9 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
     planningProjection,
     priorTotals,
     events,
+    previousPreview,
   ]);
+  const recommendation = planningResult?.recommendation;
 
   useEffect(() => wakeLock.subscribe(setWakeStatus), [wakeLock]);
 
@@ -482,6 +527,7 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
   const confirmRecommendation = async () => {
     if (!recommendation || recommendation.swaps.length === 0) return;
     const swaps = recommendation.swaps;
+    setPreviousPreview(planningResult?.preview ?? []);
     const actionElapsed = clockRef.current.elapsedMs();
     const currentProjection = projectStoredMatch(match, events, actionElapsed);
     const outgoing = swaps.map((swap) => String(swap.outgoingPlayerId));
@@ -506,6 +552,15 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
         lineupBeforeIds: [...currentProjection.currentLineupIds],
         lineupAfterIds: lineupAfter,
         recommendationId: recommendation.id,
+        fixedRhythmPreview: planningResult?.preview.map((step) => ({
+          dueAtElapsedMs: step.dueAtElapsedMs,
+          lineupBeforeIds: step.lineupBeforeIds.map(String),
+          lineupAfterIds: step.lineupAfterIds.map(String),
+          swaps: step.swaps.map((swap) => ({
+            outgoingPlayerId: String(swap.outgoingPlayerId),
+            incomingPlayerId: String(swap.incomingPlayerId),
+          })),
+        })),
       },
     };
     await commit(event, match, lineupAfter, actionElapsed);
@@ -513,6 +568,7 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
 
   const confirmManual = async () => {
     if (!manualOutgoing || !manualIncoming) return;
+    setPreviousPreview([]);
     const actionElapsed = clockRef.current.elapsedMs();
     const currentProjection = projectStoredMatch(match, events, actionElapsed);
     const lineupAfter = currentProjection.currentLineupIds.map((id) =>
@@ -549,16 +605,20 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
         match,
         manualPauseScope,
       );
-      const participationPause = {
+      const pauseReason: Exclude<ManualChangeReason, "ordinary"> | "other" =
+        manualReason === "ordinary" ? "other" : manualReason;
+      const participationPause: PlayerRecord["participationPauses"][number] = {
         id: pauseId,
         originMatchId: match.id,
         scope: manualPauseScope,
         matchIds: pausedMatchIds,
+        resumedMatchIds: [],
         balanceTreatment: manualBalanceTreatment,
+        reason: pauseReason,
         availabilityActive: true,
         compensationActive:
           outgoingPlayer.membership === "team" && manualBalanceTreatment === "preserve",
-      } as const;
+      };
       const updatedPlayer: PlayerRecord = {
         ...outgoingPlayer,
         participationPauses: [
@@ -610,6 +670,7 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
           previousAvailable: true,
           available: false,
           reason: "Deltakelsespause etter manuelt bytte",
+          pauseReason,
           pauseScope: manualPauseScope,
           balanceTreatment: manualBalanceTreatment,
           previousUnavailableMatchIds: outgoingPlayer.unavailableMatchIds,
@@ -632,10 +693,12 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
       setManualOutgoing(undefined);
       setManualPauseScope("none");
       setManualBalanceTreatment("preserve");
+      setManualReason("ordinary");
     }
   };
 
   const toggleAvailability = async (id: string) => {
+    setPreviousPreview([]);
     const actionElapsed = clockRef.current.elapsedMs();
     const currentProjection = projectStoredMatch(match, events, actionElapsed);
     const domainId = playerId(id);
@@ -665,11 +728,72 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
         available: !currentlyAvailable,
       },
     };
-    await commit(event, match, currentProjection.currentLineupIds, actionElapsed);
+    const player = players.find((candidate) => candidate.id === id);
+    const playerUpdates: PlayerRecord[] = [];
+    if (player) {
+      if (currentlyAvailable) {
+        const explicitUnavailableMatchIds = [
+          ...new Set([...player.explicitUnavailableMatchIds, match.id]),
+        ];
+        playerUpdates.push({
+          ...player,
+          explicitUnavailableMatchIds,
+          unavailableMatchIds: [
+            ...new Set([
+              ...explicitUnavailableMatchIds,
+              ...player.participationPauses.flatMap((pause) => pause.matchIds),
+            ]),
+          ],
+        });
+      } else {
+        const explicitUnavailableMatchIds = player.explicitUnavailableMatchIds.filter(
+          (matchId) => matchId !== match.id,
+        );
+        const participationPauses = player.participationPauses.map((pause) => {
+          if (!pause.matchIds.includes(match.id)) return pause;
+          const matchIds = pause.matchIds.filter(
+            (pausedMatchId) => pausedMatchId !== match.id,
+          );
+          return {
+            ...pause,
+            matchIds,
+            resumedMatchIds: [...new Set([...pause.resumedMatchIds, match.id])],
+            availabilityActive: pause.scope !== "current" || matchIds.length > 0,
+          };
+        });
+        playerUpdates.push({
+          ...player,
+          explicitUnavailableMatchIds,
+          participationPauses,
+          unavailableMatchIds: [
+            ...new Set([
+              ...explicitUnavailableMatchIds,
+              ...participationPauses.flatMap((pause) => pause.matchIds),
+            ]),
+          ],
+        });
+      }
+    }
+    if (
+      await commit(
+        event,
+        match,
+        currentProjection.currentLineupIds,
+        actionElapsed,
+        true,
+        playerUpdates,
+      )
+    ) {
+      const byId = new Map(playerUpdates.map((candidate) => [candidate.id, candidate]));
+      setPlayers((current) =>
+        current.map((candidate) => byId.get(candidate.id) ?? candidate),
+      );
+    }
   };
 
   const confirmUnavailableReplacement = async () => {
     if (!availabilityAction) return;
+    setPreviousPreview([]);
     const actionElapsed = clockRef.current.elapsedMs();
     const currentProjection = projectStoredMatch(match, events, actionElapsed);
     const lineupAfter = currentProjection.currentLineupIds.map((id) =>
@@ -707,7 +831,36 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
         available: false,
       },
     };
-    if (await commit([substitution, availability], match, lineupAfter, actionElapsed)) {
+    const player = players.find(
+      (candidate) => candidate.id === availabilityAction.playerId,
+    );
+    const playerUpdates: PlayerRecord[] = player
+      ? [
+          {
+            ...player,
+            explicitUnavailableMatchIds: [
+              ...new Set([...player.explicitUnavailableMatchIds, match.id]),
+            ],
+            unavailableMatchIds: [
+              ...new Set([...player.unavailableMatchIds, match.id]),
+            ],
+          },
+        ]
+      : [];
+    if (
+      await commit(
+        [substitution, availability],
+        match,
+        lineupAfter,
+        actionElapsed,
+        true,
+        playerUpdates,
+      )
+    ) {
+      const byId = new Map(playerUpdates.map((candidate) => [candidate.id, candidate]));
+      setPlayers((current) =>
+        current.map((candidate) => byId.get(candidate.id) ?? candidate),
+      );
       setAvailabilityAction(undefined);
     }
   };
@@ -937,6 +1090,7 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
         const byId = new Map(playerUpdates.map((player) => [player.id, player]));
         setPlayers((current) => current.map((player) => byId.get(player.id) ?? player));
       }
+      setPreviousPreview([]);
       setToolsOpen(false);
     }
   };
@@ -1050,11 +1204,29 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
       projection.currentlyAvailableIds.includes(playerId(player.id)) &&
       !projection.currentLineupIds.includes(playerId(player.id)),
   );
+  const pausedPlayers = players.filter(
+    (player) =>
+      match.eligiblePlayerIds.includes(player.id) &&
+      !projection.currentlyAvailableIds.includes(playerId(player.id)),
+  );
+  const pauseReason = (player: PlayerRecord): string => {
+    const pause = [...player.participationPauses]
+      .reverse()
+      .find(
+        (candidate) =>
+          candidate.availabilityActive && candidate.matchIds.includes(match.id),
+      );
+    if (pause?.reason === "injured") return "Skadet";
+    if (pause?.reason === "lost-motivation") return "Mistet motivasjonen";
+    if (pause?.reason === "needs-break") return "Trenger pause";
+    return "Deltakelsespause";
+  };
   const openManual = (outgoing?: string) => {
     setManualOutgoing(outgoing);
     setManualIncoming(benchPlayers.length === 1 ? benchPlayers[0]?.id : undefined);
     setManualPauseScope("none");
     setManualBalanceTreatment("preserve");
+    setManualReason("ordinary");
     setManualOpen(true);
   };
 
@@ -1138,6 +1310,17 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
                 <span>UT</span>
               </strong>
             </div>
+            {planningResult?.preview[1] && (
+              <p className="following-change">
+                Deretter {formatDuration(planningResult.preview[1].dueAtElapsedMs)} ·{" "}
+                {planningResult.preview[1].swaps
+                  .map(
+                    (swap) =>
+                      `${playerName(players, swap.incomingPlayerId)} inn / ${playerName(players, swap.outgoingPlayerId)} ut`,
+                  )
+                  .join(" + ")}
+              </p>
+            )}
             {due && (
               <p className="overdue">
                 +{formatDuration(Math.abs(dueDelta ?? 0))} · Ta byttet når spillet
@@ -1246,6 +1429,29 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
         </div>
       </section>
 
+      {pausedPlayers.length > 0 && (
+        <section className="paused-players" aria-labelledby="paused-heading">
+          <h2 id="paused-heading">Pause / ikke klar</h2>
+          <div className="paused-player-list">
+            {pausedPlayers.map((player) => (
+              <article className="paused-player" key={player.id}>
+                <div>
+                  <strong>{player.name}</strong>
+                  <small>{pauseReason(player)}</small>
+                </div>
+                <Button
+                  variant="secondary"
+                  disabled={saveState === "saving"}
+                  onClick={() => void toggleAvailability(player.id)}
+                >
+                  Klar igjen
+                </Button>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
+
       <footer className="live-actions">
         <Button
           disabled={match.status === "paused" || saveState === "saving"}
@@ -1279,10 +1485,12 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
           elapsedMs={elapsedMs}
           pauseScope={manualPauseScope}
           balanceTreatment={manualBalanceTreatment}
+          reason={manualReason}
           onOutgoing={setManualOutgoing}
           onIncoming={setManualIncoming}
           onPauseScope={setManualPauseScope}
           onBalanceTreatment={setManualBalanceTreatment}
+          onReason={setManualReason}
           onConfirm={() => void confirmManual()}
           onCancel={() => {
             setManualOpen(false);
@@ -1290,6 +1498,7 @@ function LiveMatchReady({ data }: { data: LoadedLiveData }) {
             setManualIncoming(undefined);
             setManualPauseScope("none");
             setManualBalanceTreatment("preserve");
+            setManualReason("ordinary");
           }}
         />
       )}
@@ -1535,10 +1744,12 @@ function ManualDialog({
   elapsedMs,
   pauseScope,
   balanceTreatment,
+  reason,
   onOutgoing,
   onIncoming,
   onPauseScope,
   onBalanceTreatment,
+  onReason,
   onConfirm,
   onCancel,
 }: {
@@ -1549,10 +1760,12 @@ function ManualDialog({
   elapsedMs: number;
   pauseScope: ParticipationPauseScope;
   balanceTreatment: BalanceTreatment;
+  reason: ManualChangeReason;
   onOutgoing: (id: string) => void;
   onIncoming: (id: string) => void;
   onPauseScope: (scope: ParticipationPauseScope) => void;
   onBalanceTreatment: (treatment: BalanceTreatment) => void;
+  onReason: (reason: ManualChangeReason) => void;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -1603,6 +1816,33 @@ function ManualDialog({
         )}
         {outgoing && (
           <div className="injury-options">
+            <fieldset className="reason-picker">
+              <legend>Hvorfor bytter du?</legend>
+              {[
+                ["ordinary", "Vanlig bytte"],
+                ["needs-break", "Trenger pause"],
+                ["lost-motivation", "Mistet motivasjonen"],
+                ["injured", "Skadet"],
+              ].map(([value, label]) => (
+                <button
+                  type="button"
+                  key={value}
+                  aria-pressed={reason === value}
+                  onClick={() => {
+                    const nextReason = value as ManualChangeReason;
+                    onReason(nextReason);
+                    if (nextReason !== "ordinary" && pauseScope === "none") {
+                      onPauseScope("current");
+                    }
+                    if (nextReason === "ordinary") {
+                      onPauseScope("none");
+                    }
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </fieldset>
             <label className="toggle-row manual-hold-out">
               <span>
                 <strong>Skadet / trenger pause</strong>
